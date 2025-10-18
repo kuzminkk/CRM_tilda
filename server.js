@@ -37,10 +37,10 @@ app.get("/get-data", async (req, res) => {
     // Пример безопасного запроса с параметром (замени table/columns на свои)
     let rows;
     if (id) {
-      const [r] = await conn.execute("SELECT id, title, description FROM your_table WHERE id = ? LIMIT 1", [id]);
+      const [r] = await conn.execute("SELECT id, title, description FROM project WHERE id = ? LIMIT 1", [id]);
       rows = r;
     } else {
-      const [r] = await conn.execute("SELECT id, title, description FROM your_table LIMIT 50");
+      const [r] = await conn.execute("SELECT id, title, description FROM project LIMIT 50");
       rows = r;
     }
 
