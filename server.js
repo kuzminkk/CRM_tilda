@@ -7,11 +7,22 @@ dotenv.config();
 
 const app = express();
 
-// Настройка CORS: укажи домен своего сайта на Tilda вместо '*'
-const allowedOrigin = process.env.CORS_ORIGIN || "*";
+const allowedOrigins = [
+  "https://project16054216.tilda.ws",
+  "http://project16054216.tilda.ws"
+];
+
 app.use(cors({
-  origin: allowedOrigin,
+  origin: function(origin, callback){
+    // если запрос идёт с allowedOrigins или без origin (например, fetch с Tilda)
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  }
 }));
+
 
 const dbConfig = {
   host: process.env.DB_HOST,
