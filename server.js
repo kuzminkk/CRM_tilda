@@ -24,9 +24,6 @@ const dbConfig = {
 
 app.get("/get-data", async (req, res) => {
   try {
-    // Пример параметра фильтра (например slug или id)
-    const { id, key } = req.query;
-
     // Опциональная простая авторизация по ключу
     if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -34,13 +31,20 @@ app.get("/get-data", async (req, res) => {
 
     const conn = await mysql.createConnection(dbConfig);
 
-    // Пример безопасного запроса с параметром (замени table/columns на свои)
     let rows;
-    if (id) {
-      const [r] = await conn.execute("SELECT id, title, description FROM project WHERE id = ? LIMIT 1", [id]);
+
+    // Если передан id — отдать конкретную запись
+    if (req.query.id) {
+      const [r] = await conn.execute(
+        "SELECT acw_id, acw_date_creation FROM Act_Completed_Works WHERE acw_id = ? LIMIT 1",
+        [req.query.id]
+      );
       rows = r;
     } else {
-      const [r] = await conn.execute("SELECT id, title, description FROM project LIMIT 50");
+      // Иначе — отдать первые 50 записей
+      const [r] = await conn.execute(
+        "SELECT acw_id, acw_date_creation FROM Act_Completed_Works ORDER BY acw_date_creation DESC LIMIT 50"
+      );
       rows = r;
     }
 
