@@ -33,31 +33,37 @@ const dbConfig = {
   // Если твой провайдер MySQL требует TLS, добавь сюда опции ssl: { rejectUnauthorized: true, ca: ... }
 };
 
-app.get("/get-data", async (req, res) => {
+app.get("/get-patients", async (req, res) => {
   try {
-    // Опциональная простая авторизация по ключу
     if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
     const conn = await mysql.createConnection(dbConfig);
 
-    let rows;
+    const [rows] = await conn.execute(`
+      SELECT 
+        CONCAT(ptt_sername, ' ', ptt_name, ' ', IFNULL(ptt_patronymic, '')) AS ФИО,
+        ptt_tel AS Телефон,
+        COUNT(vst_id) AS Количество_визитов,
+        ptt_birth AS Дата_рождения,
+        MAX(vst_date) AS Дата_последнего_визита,
+        ptt_date_creation AS Дата_добавления_в_систему
+      FROM Patients p
+      JOIN Visits v ON p.ptt_id = v.ptt_id_FK
+      GROUP BY p.ptt_id, p.ptt_sername, p.ptt_name, p.ptt_patronymic, p.ptt_tel, p.tt_birth, p.ptt_date_creation
+      ORDER BY p.ptt_id
+    `);
 
-    // Если передан id — отдать конкретную запись
-    if (req.query.id) {
-      const [r] = await conn.execute(
-        "SELECT acw_id, acw_date_creation FROM Act_Completed_Works WHERE acw_id = ? LIMIT 1",
-        [req.query.id]
-      );
-      rows = r;
-    } else {
-      // Иначе — отдать первые 50 записей
-      const [r] = await conn.execute(
-        "SELECT acw_id, acw_date_creation FROM Act_Completed_Works ORDER BY acw_date_creation DESC LIMIT 50"
-      );
-      rows = r;
-    }
+    await conn.end();
+    res.json(rows);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
 
     await conn.end();
     res.json(rows);
