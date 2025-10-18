@@ -12,12 +12,22 @@ const allowedOrigins = [
   "http://project16054216.tilda.ws"
 ];
 
+const allowedOrigins = [
+  "https://project16054216.tilda.ws",
+  "http://project16054216.tilda.ws"
+];
+
 app.use(cors({
   origin: function(origin, callback){
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) callback(null, true);
-    else callback(new Error("Not allowed by CORS"));
+    // Разрешаем, если origin пустой (например, fetch с Tilda) или в списке allowedOrigins
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
   }
 }));
+
 
 const dbConfig = {
   host: process.env.DB_HOST,
