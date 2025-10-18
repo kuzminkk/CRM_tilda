@@ -14,15 +14,10 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function(origin, callback){
-    // если запрос идёт с allowedOrigins или без origin (например, fetch с Tilda)
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) callback(null, true);
+    else callback(new Error("Not allowed by CORS"));
   }
 }));
-
 
 const dbConfig = {
   host: process.env.DB_HOST,
@@ -30,9 +25,9 @@ const dbConfig = {
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
   port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306,
-  // Если твой провайдер MySQL требует TLS, добавь сюда опции ssl: { rejectUnauthorized: true, ca: ... }
 };
 
+// Endpoint для пациентов
 app.get("/get-patients", async (req, res) => {
   try {
     if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
@@ -51,7 +46,7 @@ app.get("/get-patients", async (req, res) => {
         ptt_date_creation AS Дата_добавления_в_систему
       FROM Patients p
       JOIN Visits v ON p.ptt_id = v.ptt_id_FK
-      GROUP BY p.ptt_id, p.ptt_sername, p.ptt_name, p.ptt_patronymic, p.ptt_tel, p.tt_birth, p.ptt_date_creation
+      GROUP BY p.ptt_id, ptt_sername, ptt_name, ptt_patronymic, ptt_tel, ptt_birth, ptt_date_creation
       ORDER BY p.ptt_id
     `);
 
@@ -64,14 +59,6 @@ app.get("/get-patients", async (req, res) => {
   }
 });
 
-
-    await conn.end();
-    res.json(rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error", detail: err.message });
-  }
-});
-
+// Старт сервера
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`API listening on port ${PORT}`));
