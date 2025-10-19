@@ -69,6 +69,47 @@ app.get("/get-patients", async (req, res) => {
   }
 });
 
+
+// ===============================
+// 📘 GET /get-patients — выборка пациентов
+// ===============================
+app.get("/get-patients", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        CONCAT(p.ptt_sername, ' ', p.ptt_name, ' ', IFNULL(p.ptt_patronymic, '')) AS ФИО,
+        p.ptt_tel AS Телефон,
+        COUNT(v.vst_id) AS Количество_визитов,
+        p.ptt_birth AS Дата_рождения,
+        MAX(v.vst_date) AS Дата_последнего_визита,
+        p.ptt_date_creation AS Дата_добавления_в_систему
+      FROM Patients p
+      LEFT JOIN Visits v ON p.ptt_id = v.ptt_id_FK
+      GROUP BY p.ptt_id, p.ptt_sername, p.ptt_name, p.ptt_patronymic, p.ptt_tel, p.ptt_birth, p.ptt_date_creation
+      ORDER BY p.ptt_id
+    `);
+
+    await conn.end();
+    res.json(rows);
+  } catch (err) {
+    console.error("Ошибка в /get-patients:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+
+
+
+
+
+
+
 // ===============================
 // 🩺 POST / — добавление пациента с формы Тильды
 // ===============================
