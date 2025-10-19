@@ -6,29 +6,28 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
+app.use(express.json());
 
+// ✅ Разрешённые источники (Тильда)
 const allowedOrigins = [
   "https://project16054216.tilda.ws",
   "http://project16054216.tilda.ws"
 ];
 
-const allowedOrigins = [
-  "https://project16054216.tilda.ws",
-  "http://project16054216.tilda.ws"
-];
+// ✅ CORS
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+  })
+);
 
-app.use(cors({
-  origin: function(origin, callback){
-    // Разрешаем, если origin пустой (например, fetch с Tilda) или в списке allowedOrigins
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  }
-}));
-
-
+// ✅ Конфигурация БД
 const dbConfig = {
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
@@ -37,7 +36,9 @@ const dbConfig = {
   port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306,
 };
 
-// Endpoint для пациентов
+// ===============================
+// 📘 GET /get-patients — выборка пациентов
+// ===============================
 app.get("/get-patients", async (req, res) => {
   try {
     if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
@@ -48,29 +49,30 @@ app.get("/get-patients", async (req, res) => {
 
     const [rows] = await conn.execute(`
       SELECT 
-        CONCAT(ptt_sername, ' ', ptt_name, ' ', IFNULL(ptt_patronymic, '')) AS ФИО,
-        ptt_tel AS Телефон,
-        COUNT(vst_id) AS Количество_визитов,
-        ptt_birth AS Дата_рождения,
-        MAX(vst_date) AS Дата_последнего_визита,
-        ptt_date_creation AS Дата_добавления_в_систему
+        CONCAT(p.ptt_sername, ' ', p.ptt_name, ' ', IFNULL(p.ptt_patronymic, '')) AS ФИО,
+        p.ptt_tel AS Телефон,
+        COUNT(v.vst_id) AS Количество_визитов,
+        p.ptt_birth AS Дата_рождения,
+        MAX(v.vst_date) AS Дата_последнего_визита,
+        p.ptt_date_creation AS Дата_добавления_в_систему
       FROM Patients p
-      JOIN Visits v ON p.ptt_id = v.ptt_id_FK
-      GROUP BY p.ptt_id, ptt_sername, ptt_name, ptt_patronymic, ptt_tel, ptt_birth, ptt_date_creation
+      LEFT JOIN Visits v ON p.ptt_id = v.ptt_id_FK
+      GROUP BY p.ptt_id, p.ptt_sername, p.ptt_name, p.ptt_patronymic, p.ptt_tel, p.ptt_birth, p.ptt_date_creation
       ORDER BY p.ptt_id
     `);
 
     await conn.end();
     res.json(rows);
-
   } catch (err) {
-    console.error(err);
+    console.error("Ошибка в /get-patients:", err);
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
 
-
-app.post("/", express.json(), async (req, res) => {
+// ===============================
+// 🩺 POST / — добавление пациента с формы Тильды
+// ===============================
+app.post("/", async (req, res) => {
   const data = req.body;
   const conn = await mysql.createConnection(dbConfig);
 
@@ -85,7 +87,8 @@ app.post("/", express.json(), async (req, res) => {
     const contractId = docResult.insertId;
 
     // 2️⃣ Добавляем пациента
-    const [patientResult] = await conn.execute(`
+    const [patientResult] = await conn.execute(
+      `
       INSERT INTO Patients (
         ptt_sername, ptt_name, ptt_patronymic, ptt_photo,
         ptt_birth, ptt_gender, ptt_tel, ptt_address, ptt_email,
@@ -94,46 +97,50 @@ app.post("/", express.json(), async (req, res) => {
         ptt_date_creation, cdt_id_FK
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURDATE(), ?)
-    `, [
-      data.lastname,
-      data.firstname,
-      data.patronymic || null,
-      data.file || null, // если фото профиля в base64
-      data.birthdate || null,
-      data.gender || "Не указано",
-      data.phone || null,
-      data.address || null,
-      data.email || null,
-      data.oms || null,
-      data.snils || null,
-      data.pass_number || null,
-      data.pass_series || null,
-      data.pass_issued || null,
-      data.disability || null,
-      data.allergies || null,
-      data.comorbid || null,
-      data.complaints || null,
-      contractId
-    ]);
+    `,
+      [
+        data.lastname,
+        data.firstname,
+        data.patronymic || null,
+        data.file || null,
+        data.birthdate || null,
+        data.gender || "Не указано",
+        data.phone || null,
+        data.address || null,
+        data.email || null,
+        data.oms || null,
+        data.snils || null,
+        data.pass_number || null,
+        data.pass_series || null,
+        data.pass_issued || null,
+        data.disability || null,
+        data.allergies || null,
+        data.comorbid || null,
+        data.complaints || null,
+        contractId,
+      ]
+    );
 
     const patientId = patientResult.insertId;
 
     // 3️⃣ Привязка категории пациента (например, “Взрослый” = id 5)
-    await conn.execute(`
-      INSERT INTO Patient_Categories (pcy_id, ptt_id_FK, cty_id_FK)
-      VALUES (NULL, ?, ?)
-    `, [patientId, 5]);
+    await conn.execute(
+      `
+      INSERT INTO Patient_Categories (ptt_id_FK, cty_id_FK)
+      VALUES (?, ?)
+    `,
+      [patientId, 5]
+    );
 
     // 4️⃣ Если прикреплён файл (PDF или фото документа)
     if (data.file && data.fileName) {
-      await conn.execute(`
+      await conn.execute(
+        `
         INSERT INTO Documents (dct_name, dct_dateupload, dct_document, ptt_id_FK)
         VALUES (?, CURDATE(), ?, ?)
-      `, [
-        data.fileName,
-        data.file, // Base64
-        patientId
-      ]);
+      `,
+        [data.fileName, data.file, patientId]
+      );
     }
 
     await conn.commit();
@@ -147,9 +154,8 @@ app.post("/", express.json(), async (req, res) => {
   }
 });
 
-
-
-
-// Старт сервера
+// ===============================
+// 🚀 Запуск сервера
+// ===============================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`API listening on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ API listening on port ${PORT}`));
