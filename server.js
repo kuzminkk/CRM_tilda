@@ -69,6 +69,87 @@ app.get("/get-patients", async (req, res) => {
   }
 });
 
+
+app.post("/", express.json(), async (req, res) => {
+  const data = req.body;
+  const conn = await mysql.createConnection(dbConfig);
+
+  try {
+    await conn.beginTransaction();
+
+    // 1️⃣ Создаём запись в Contract_Documents
+    const [docResult] = await conn.execute(`
+      INSERT INTO Contract_Documents (cdt_date_creation)
+      VALUES (CURDATE())
+    `);
+    const contractId = docResult.insertId;
+
+    // 2️⃣ Добавляем пациента
+    const [patientResult] = await conn.execute(`
+      INSERT INTO Patients (
+        ptt_sername, ptt_name, ptt_patronymic, ptt_photo,
+        ptt_birth, ptt_gender, ptt_tel, ptt_address, ptt_email,
+        ptt_policyOMS, ptt_snils, ptt_passport_number, ptt_passport_series, ptt_date_of_issue,
+        ptt_disability, ptt_allergy, ptt_diseases, ptt_complaints,
+        ptt_date_creation, cdt_id_FK
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURDATE(), ?)
+    `, [
+      data.lastname,
+      data.firstname,
+      data.patronymic || null,
+      data.file || null, // если фото профиля в base64
+      data.birthdate || null,
+      data.gender || "Не указано",
+      data.phone || null,
+      data.address || null,
+      data.email || null,
+      data.oms || null,
+      data.snils || null,
+      data.pass_number || null,
+      data.pass_series || null,
+      data.pass_issued || null,
+      data.disability || null,
+      data.allergies || null,
+      data.comorbid || null,
+      data.complaints || null,
+      contractId
+    ]);
+
+    const patientId = patientResult.insertId;
+
+    // 3️⃣ Привязка категории пациента (например, “Взрослый” = id 5)
+    await conn.execute(`
+      INSERT INTO Patient_Categories (pcy_id, ptt_id_FK, cty_id_FK)
+      VALUES (NULL, ?, ?)
+    `, [patientId, 5]);
+
+    // 4️⃣ Если прикреплён файл (PDF или фото документа)
+    if (data.file && data.fileName) {
+      await conn.execute(`
+        INSERT INTO Documents (dct_name, dct_dateupload, dct_document, ptt_id_FK)
+        VALUES (?, CURDATE(), ?, ?)
+      `, [
+        data.fileName,
+        data.file, // Base64
+        patientId
+      ]);
+    }
+
+    await conn.commit();
+    res.status(200).json({ status: "ok", message: "Пациент успешно добавлен" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("Ошибка при вставке пациента:", err);
+    res.status(500).json({ error: "Ошибка сервера", detail: err.message });
+  } finally {
+    await conn.end();
+  }
+});
+
+
+
+
 // Старт сервера
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`API listening on port ${PORT}`));
