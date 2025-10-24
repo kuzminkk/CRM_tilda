@@ -344,7 +344,42 @@ app.post("/add-employee", async (req, res) => {
   }
 });
 
+// ===============================
+// 👥 GET /get-employees — выборка сотрудников для таблицы
+// ===============================
+app.get("/get-employees", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
 
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        e.ele_id AS №,
+        CONCAT(e.ele_sername, ' ', e.ele_name, ' ', IFNULL(e.ele_patronymic, '')) AS ФИО,
+        p.psn_name AS Должность,
+        e.ele_tel AS Телефон,
+        e.ele_birth AS Дата_рождения,
+        CASE 
+          WHEN e.ess_id_FK = 1 THEN 'Базовые права'
+          WHEN e.ess_id_FK = 2 THEN 'Расширенные права'
+          ELSE 'Права не назначены'
+        END AS Набор_прав_доступа
+      FROM Employees e
+      JOIN Positions p ON e.psn_id_FK = p.psn_id
+      WHERE e.ess_id_FK = 2 -- Только активные сотрудники
+      ORDER BY e.ele_id
+    `);
+
+    await conn.end();
+    res.json(rows);
+  } catch (err) {
+    console.error("Ошибка в /get-employees:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
 
 
 // ===============================
