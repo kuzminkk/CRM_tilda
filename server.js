@@ -12,6 +12,7 @@ app.use(express.json());
 const allowedOrigins = [
   "https://project16054216.tilda.ws",
   "http://project16054216.tilda.ws",
+  "http://systemdental.tilda.ws"
 ];
 
 // ✅ CORS
