@@ -216,6 +216,136 @@ app.post("/", async (req, res) => {
   }
 });
 
+
+
+
+// ===============================
+// 👨‍💼 POST /add-employee — добавление сотрудника с формы
+// ===============================
+app.post("/add-employee", async (req, res) => {
+  const data = req.body;
+  const conn = await mysql.createConnection(dbConfig);
+
+  try {
+    await conn.beginTransaction();
+
+    // Определяем ID должности по названию
+    let positionId;
+    const [positionRows] = await conn.execute(
+      `SELECT psn_id FROM Positions WHERE psn_name = ?`,
+      [data.position]
+    );
+
+    if (positionRows.length > 0) {
+      positionId = positionRows[0].psn_id;
+    } else {
+      // Если должности нет - создаём новую
+      const [newPosition] = await conn.execute(
+        `INSERT INTO Positions (psn_name) VALUES (?)`,
+        [data.position]
+      );
+      positionId = newPosition.insertId;
+    }
+
+    // Определяем статус сотрудника (уволен или активен)
+    const employeeStatus = data.dismissed ? 1 : 2; // 1 - неактивен, 2 - активен
+
+    // Преобразуем дату рождения из формата дд.мм.гггг в гггг-мм-дд
+    let formattedBirthdate = null;
+    if (data.birthdate) {
+      const [day, month, year] = data.birthdate.split('.');
+      formattedBirthdate = `${year}-${month}-${day}`;
+    }
+
+    // Преобразуем СНИЛС - убираем форматирование
+    const cleanSnils = data.snils ? data.snils.replace(/\D/g, '') : null;
+
+    // Добавляем сотрудника
+    const [employeeResult] = await conn.execute(
+      `
+      INSERT INTO Employees (
+        ele_sername, ele_name, ele_patronymic, ele_photo,
+        psn_id_FK, ele_snils, ele_birth, ele_tel, ele_email,
+        ele_INN, ele_description, ess_id_FK
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        data.lastname,
+        data.firstname,
+        data.patronymic || null,
+        data.photo || null, // Base64 фото
+        positionId,
+        cleanSnils,
+        formattedBirthdate,
+        data.phone ? data.phone.replace(/\D/g, '') : null, // Очищаем телефон от форматирования
+        data.email || null,
+        data.inn || null,
+        data.description || null,
+        employeeStatus
+      ]
+    );
+
+    const employeeId = employeeResult.insertId;
+
+    // Если сотрудник должен отображаться в расписании, создаём для него рабочие расписания
+    if (data.show_in_schedule && !data.dismissed) {
+      // Создаём базовое рабочее расписание на ближайший месяц
+      const startDate = new Date();
+      const endDate = new Date();
+      endDate.setMonth(endDate.getMonth() + 1);
+
+      const workSchedules = [];
+      const currentDate = new Date(startDate);
+      
+      // Создаём расписание на каждый рабочий день (пн-пт)
+      while (currentDate <= endDate) {
+        const dayOfWeek = currentDate.getDay();
+        // Пн-Пт (1-5) - рабочие дни
+        if (dayOfWeek >= 1 && dayOfWeek <= 5) {
+          const dateStr = currentDate.toISOString().split('T')[0];
+          
+          // Создаём запись в Work_Schedules
+          const [scheduleResult] = await conn.execute(
+            `INSERT INTO Work_Schedules (wse_calend_numb, wse_workstart, wse_workend, swk_id_FK)
+             VALUES (?, '09:00:00', '18:00:00', 2)`, // 2 - активный статус
+            [dateStr]
+          );
+          
+          // Связываем сотрудника с расписанием
+          await conn.execute(
+            `INSERT INTO Employee_Work_Schedules (wse_id_FK, ele_id_FK)
+             VALUES (?, ?)`,
+            [scheduleResult.insertId, employeeId]
+          );
+        }
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+    }
+
+    await conn.commit();
+    
+    res.status(200).json({ 
+      status: "success", 
+      message: "Сотрудник успешно добавлен",
+      employeeId: employeeId
+    });
+    
+  } catch (err) {
+    await conn.rollback();
+    console.error("Ошибка при добавлении сотрудника:", err);
+    res.status(500).json({ 
+      error: "Ошибка сервера при добавлении сотрудника", 
+      detail: err.message 
+    });
+  } finally {
+    await conn.end();
+  }
+});
+
+
+
+
 // ===============================
 // 🚀 Запуск сервера
 // ===============================
