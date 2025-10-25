@@ -369,7 +369,6 @@ app.get("/get-employees", async (req, res) => {
         END AS Набор_прав_доступа
       FROM Employees e
       JOIN Positions p ON e.psn_id_FK = p.psn_id
-#     WHERE e.ess_id_FK = 2 -- Только активные сотрудники
       ORDER BY e.ele_id
     `);
 
