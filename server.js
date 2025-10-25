@@ -382,6 +382,120 @@ app.get("/get-employees", async (req, res) => {
 
 
 // ===============================
+// 👤 GET /get-patient-full — получение полных данных пациента по ФИО
+// ===============================
+app.get("/get-patient-full", async (req, res) => {
+  const { lastname, firstname, patronymic, api_key } = req.query;
+
+  if (process.env.API_KEY && api_key !== process.env.API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  if (!lastname || !firstname) {
+    return res.status(400).json({ error: "Не указаны фамилия и имя" });
+  }
+
+  const conn = await mysql.createConnection(dbConfig);
+
+  try {
+    const [rows] = await conn.execute(
+      `
+      SELECT * FROM Patients 
+      WHERE ptt_sername = ? 
+        AND ptt_name = ?
+        AND (ptt_patronymic = ? OR ? IS NULL OR ptt_patronymic IS NULL)
+      LIMIT 1
+      `,
+      [lastname, firstname, patronymic || null, patronymic || null]
+    );
+
+    await conn.end();
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Пациент не найден" });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Ошибка в /get-patient-full:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// ===============================
+// ✏️ PUT /update-patient — обновление данных пациента
+// ===============================
+app.put("/update-patient", async (req, res) => {
+  const data = req.body;
+  const conn = await mysql.createConnection(dbConfig);
+
+  try {
+    await conn.beginTransaction();
+
+    // Преобразуем пол для БД
+    let genderDB = "Не указано";
+    if (data.gender === "male") genderDB = "Мужской";
+    if (data.gender === "female") genderDB = "Женский";
+
+    // Обновляем данные пациента
+    await conn.execute(
+      `
+      UPDATE Patients SET
+        ptt_sername = ?,
+        ptt_name = ?,
+        ptt_patronymic = ?,
+        ptt_birth = ?,
+        ptt_gender = ?,
+        ptt_tel = ?,
+        ptt_address = ?,
+        ptt_email = ?,
+        ptt_policyOMS = ?,
+        ptt_snils = ?,
+        ptt_passport_series = ?,
+        ptt_passport_number = ?,
+        ptt_date_of_issue = ?,
+        ptt_disability = ?,
+        ptt_allergy = ?,
+        ptt_diseases = ?,
+        ptt_complaints = ?
+      WHERE ptt_id = ?
+      `,
+      [
+        data.lastname,
+        data.firstname,
+        data.patronymic || null,
+        data.birthdate || null,
+        genderDB,
+        data.phone || null,
+        data.address || null,
+        data.email || null,
+        data.oms || null,
+        data.snils || null,
+        data.pass_series || null,
+        data.pass_number || null,
+        data.pass_issued || null,
+        data.disability || null,
+        data.allergies || null,
+        data.comorbid || null,
+        data.complaints || null,
+        data.patient_id
+      ]
+    );
+
+    await conn.commit();
+    res.status(200).json({ status: "success", message: "Данные пациента обновлены" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("Ошибка при обновлении пациента:", err);
+    res.status(500).json({ error: "Ошибка сервера", detail: err.message });
+  } finally {
+    await conn.end();
+  }
+});
+
+
+
+// ===============================
 // 🚀 Запуск сервера
 // ===============================
 const PORT = process.env.PORT || 3000;
