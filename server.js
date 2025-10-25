@@ -493,7 +493,53 @@ app.put("/update-patient", async (req, res) => {
   }
 });
 
+// ===============================
+// 👤 GET /get-patient-full — получение полных данных пациента по ФИО
+// ===============================
+app.get("/get-patient-full", async (req, res) => {
+  const { lastname, firstname, patronymic, api_key } = req.query;
 
+  if (process.env.API_KEY && api_key !== process.env.API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  if (!lastname || !firstname) {
+    return res.status(400).json({ error: "Не указаны фамилия и имя" });
+  }
+
+  const conn = await mysql.createConnection(dbConfig);
+
+  try {
+    let query = `
+      SELECT * FROM Patients 
+      WHERE ptt_sername = ? 
+        AND ptt_name = ?
+    `;
+    let params = [lastname, firstname];
+
+    if (patronymic) {
+      query += ` AND ptt_patronymic = ?`;
+      params.push(patronymic);
+    } else {
+      query += ` AND (ptt_patronymic IS NULL OR ptt_patronymic = '')`;
+    }
+
+    query += ` LIMIT 1`;
+
+    const [rows] = await conn.execute(query, params);
+
+    await conn.end();
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Пациент не найден" });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Ошибка в /get-patient-full:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
 
 // ===============================
 // 🚀 Запуск сервера
