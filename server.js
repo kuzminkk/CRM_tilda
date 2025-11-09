@@ -607,6 +607,212 @@ app.get("/get-visit-info", async (req, res) => {
 
 
 
+
+
+
+
+
+
+// ===============================
+// 🦷 GET /get-dental-services — получение списка стоматологических услуг
+// ===============================
+app.get("/get-dental-services", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        dse_id,
+        dse_name,
+        dse_price,
+        dse_warranty,
+        dse_description,
+        scy_id_FK
+      FROM Dental_Services
+      ORDER BY dse_name
+    `);
+
+    await conn.end();
+    res.json(rows);
+  } catch (err) {
+    console.error("Ошибка в /get-dental-services:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// ===============================
+// 👨‍⚕️ GET /get-doctors — получение списка врачей
+// ===============================
+app.get("/get-doctors", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        ele_id,
+        CONCAT(ele_sername, ' ', ele_name, ' ', IFNULL(ele_patronymic, '')) AS ФИО,
+        p.psn_name AS Должность
+      FROM Employees e
+      JOIN Positions p ON e.psn_id_FK = p.psn_id
+      WHERE p.psn_name IN ('Терапевт', 'Врач-ортодонт', 'Стоматолог-хирург', 'Стоматолог-ортопед')
+      ORDER BY ele_sername, ele_name
+    `);
+
+    await conn.end();
+    res.json(rows);
+  } catch (err) {
+    console.error("Ошибка в /get-doctors:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// ===============================
+// 💾 POST /save-visit — сохранение визита
+// ===============================
+app.post("/save-visit", async (req, res) => {
+  const { patientId, date, startTime, endTime, doctorId, discount, services, visitId } = req.body;
+  
+  if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  if (!patientId || !date || !doctorId || !services || services.length === 0) {
+    return res.status(400).json({ error: "Не все обязательные поля заполнены" });
+  }
+
+  const conn = await mysql.createConnection(dbConfig);
+
+  try {
+    await conn.beginTransaction();
+
+    let visitIdToUse = visitId;
+
+    if (visitId) {
+      // Обновление существующего визита
+      await conn.execute(
+        `UPDATE Visits SET 
+          vst_date = ?, vst_timestrart = ?, vst_timeend = ?, 
+          ele_id_FK = ?, vst_discount = ?, vst_final_sumservice = ?
+         WHERE vst_id = ?`,
+        [date, startTime, endTime, doctorId, discount, req.body.finalAmount, visitId]
+      );
+
+      // Удаляем старые услуги
+      await conn.execute(`DELETE FROM Visit_Dental_Services WHERE vst_id_FK = ?`, [visitId]);
+    } else {
+      // Создание нового визита
+      const [visitResult] = await conn.execute(
+        `INSERT INTO Visits (
+          ptt_id_FK, ele_id_FK, vst_date, vst_timestrart, vst_timeend,
+          vte_id_FK, vss_id_FK, vst_discount, vst_final_sumservice
+        ) VALUES (?, ?, ?, ?, ?, 1, 2, ?, ?)`,
+        [patientId, doctorId, date, startTime, endTime, discount, req.body.finalAmount]
+      );
+      visitIdToUse = visitResult.insertId;
+    }
+
+    // Добавляем услуги
+    for (const service of services) {
+      await conn.execute(
+        `INSERT INTO Visit_Dental_Services (
+          vst_id_FK, dse_id_FK, vds_quantity, vds_discount, vds_total_amount
+        ) VALUES (?, ?, ?, ?, ?)`,
+        [visitIdToUse, service.serviceId, service.quantity, 0, service.total]
+      );
+    }
+
+    await conn.commit();
+    
+    res.status(200).json({ 
+      status: "success", 
+      message: "Визит успешно сохранен",
+      visitId: visitIdToUse
+    });
+    
+  } catch (err) {
+    await conn.rollback();
+    console.error("Ошибка при сохранении визита:", err);
+    res.status(500).json({ 
+      error: "Ошибка сервера при сохранении визита", 
+      detail: err.message 
+    });
+  } finally {
+    await conn.end();
+  }
+});
+
+// ===============================
+// 💳 POST /process-payment — обработка оплаты
+// ===============================
+app.post("/process-payment", async (req, res) => {
+  const { visitId, paymentMethod, amount } = req.body;
+  
+  if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  if (!visitId || !paymentMethod || !amount) {
+    return res.status(400).json({ error: "Не все обязательные поля заполнены" });
+  }
+
+  const conn = await mysql.createConnection(dbConfig);
+
+  try {
+    await conn.beginTransaction();
+
+    // Создаем квитанцию об оплате
+    const [receiptResult] = await conn.execute(
+      `INSERT INTO Payment_Receipts (prt_date_creation) VALUES (CURDATE())`
+    );
+    const receiptId = receiptResult.insertId;
+
+    // Добавляем запись об оплате
+    await conn.execute(
+      `INSERT INTO Paymet_Visits (pvt_payment, pmd_id_FK, vst_id_FK) VALUES (?, ?, ?)`,
+      [amount, paymentMethod, visitId]
+    );
+
+    // Обновляем визит - добавляем ссылку на квитанцию и сумму оплаты
+    await conn.execute(
+      `UPDATE Visits SET prt_id_FK = ?, vst_payment_amount = ? WHERE vst_id = ?`,
+      [receiptId, amount, visitId]
+    );
+
+    await conn.commit();
+    
+    res.status(200).json({ 
+      status: "success", 
+      message: "Оплата успешно обработана",
+      receiptId: receiptId
+    });
+    
+  } catch (err) {
+    await conn.rollback();
+    console.error("Ошибка при обработке оплаты:", err);
+    res.status(500).json({ 
+      error: "Ошибка сервера при обработке оплаты", 
+      detail: err.message 
+    });
+  } finally {
+    await conn.end();
+  }
+});
+
+
+
+
+
+
+
+
 // ===============================
 // 🚀 Запуск сервера
 // ===============================
