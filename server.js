@@ -678,10 +678,10 @@ app.get("/get-doctors", async (req, res) => {
 });
 
 // ===============================
-// 💾 POST /save-visit — сохранение визита
+// 💾 POST /save-visit — сохранение визита (ИСПРАВЛЕННЫЙ)
 // ===============================
 app.post("/save-visit", async (req, res) => {
-  const { patientId, date, startTime, endTime, doctorId, discount, services, visitId } = req.body;
+  const { patientId, date, startTime, endTime, doctorId, discount, services, finalAmount, visitId } = req.body;
   
   if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
     return res.status(401).json({ error: "Unauthorized" });
@@ -696,7 +696,7 @@ app.post("/save-visit", async (req, res) => {
   try {
     await conn.beginTransaction();
 
-    let visitIdToUse = visitId;
+    let visitIdToUse;
 
     if (visitId) {
       // Обновление существующего визита
@@ -705,8 +705,9 @@ app.post("/save-visit", async (req, res) => {
           vst_date = ?, vst_timestrart = ?, vst_timeend = ?, 
           ele_id_FK = ?, vst_discount = ?, vst_final_sumservice = ?
          WHERE vst_id = ?`,
-        [date, startTime, endTime, doctorId, discount, req.body.finalAmount, visitId]
+        [date, startTime, endTime, doctorId, discount, finalAmount, visitId]
       );
+      visitIdToUse = visitId;
 
       // Удаляем старые услуги
       await conn.execute(`DELETE FROM Visit_Dental_Services WHERE vst_id_FK = ?`, [visitId]);
@@ -717,18 +718,21 @@ app.post("/save-visit", async (req, res) => {
           ptt_id_FK, ele_id_FK, vst_date, vst_timestrart, vst_timeend,
           vte_id_FK, vss_id_FK, vst_discount, vst_final_sumservice
         ) VALUES (?, ?, ?, ?, ?, 1, 2, ?, ?)`,
-        [patientId, doctorId, date, startTime, endTime, discount, req.body.finalAmount]
+        [patientId, doctorId, date, startTime, endTime, discount, finalAmount]
       );
       visitIdToUse = visitResult.insertId;
     }
 
+    console.log('ID визита для услуг:', visitIdToUse); // Для отладки
+
     // Добавляем услуги
     for (const service of services) {
+      console.log('Добавляем услугу:', service); // Для отладки
       await conn.execute(
         `INSERT INTO Visit_Dental_Services (
           vst_id_FK, dse_id_FK, vds_quantity, vds_discount, vds_total_amount
-        ) VALUES (?, ?, ?, ?, ?)`,
-        [visitIdToUse, service.serviceId, service.quantity, 0, service.total]
+        ) VALUES (?, ?, ?, 0, ?)`,
+        [visitIdToUse, service.serviceId, service.quantity, service.total]
       );
     }
 
@@ -743,9 +747,13 @@ app.post("/save-visit", async (req, res) => {
   } catch (err) {
     await conn.rollback();
     console.error("Ошибка при сохранении визита:", err);
+    console.error("Детали ошибки:", {
+      patientId, date, doctorId, visitId, servicesCount: services?.length
+    });
     res.status(500).json({ 
       error: "Ошибка сервера при сохранении визита", 
-      detail: err.message 
+      detail: err.message,
+      sql: err.sql
     });
   } finally {
     await conn.end();
