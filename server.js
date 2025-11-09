@@ -76,7 +76,10 @@ app.get("/get-patients", async (req, res) => {
 app.get("/get-visit-info", async (req, res) => {
   const { lastname, firstname, patronymic, api_key } = req.query;
 
+  console.log('Получен запрос /get-visit-info с параметрами:', { lastname, firstname, patronymic, api_key });
+
   if (process.env.API_KEY && api_key !== process.env.API_KEY) {
+    console.log('Неавторизованный запрос: неверный API ключ');
     return res.status(401).json({ error: "Unauthorized" });
   }
 
@@ -90,14 +93,17 @@ app.get("/get-visit-info", async (req, res) => {
     const [rows] = await conn.execute(
       `
       SELECT 
+        vst.vst_id,
         CONCAT(ptt.ptt_sername, ' ', ptt.ptt_name, ' ', IFNULL(ptt.ptt_patronymic, '')) AS ФИО_пациента,
         vss.vss_type AS Статус_визита,
         vst.vst_date AS Дата_визита,
         vst.vst_timestrart AS Начало_визита,
         vst.vst_timeend AS Конец_визита,
         CONCAT(emp.ele_sername, ' ', emp.ele_name, ' ', IFNULL(emp.ele_patronymic, '')) AS ФИО_врача,
+        emp.ele_id,
         vte.vte_type AS Тип_визита,
         vst.vst_note AS Комментарий_к_визиту,
+        ds.dse_id,
         ds.dse_name AS Наименование_услуги,
         vds.vds_quantity AS Количество_услуг,
         vds.vds_discount AS Скидка_на_услугу,
@@ -114,16 +120,18 @@ app.get("/get-visit-info", async (req, res) => {
       JOIN Visit_Types vte ON vst.vte_id_FK = vte.vte_id
       JOIN Visit_Dental_Services vds ON vst.vst_id = vds.vst_id_FK
       JOIN Dental_Services ds ON vds.dse_id_FK = ds.dse_id
-      JOIN Paymet_Visits pv ON vst.vst_id = pv.vst_id_FK
-      JOIN Payment_Methods pm ON pv.pmd_id_FK = pm.pmd_id
+      LEFT JOIN Paymet_Visits pv ON vst.vst_id = pv.vst_id_FK
+      LEFT JOIN Payment_Methods pm ON pv.pmd_id_FK = pm.pmd_id
       WHERE ptt.ptt_sername = ? 
         AND ptt.ptt_name = ?
-        AND (ptt.ptt_patronymic = ? OR ? IS NULL)
-      ORDER BY vst.vst_date DESC
+        AND (ptt.ptt_patronymic = ? OR ? IS NULL OR ptt.ptt_patronymic IS NULL)
+      ORDER BY vst.vst_date DESC, vst.vst_timestrart DESC
       `,
       [lastname, firstname, patronymic || null, patronymic || null]
     );
 
+    console.log(`Найдено визитов: ${rows.length}`);
+    
     await conn.end();
     res.json(rows);
   } catch (err) {
@@ -131,7 +139,6 @@ app.get("/get-visit-info", async (req, res) => {
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
-
 // ===============================
 // 🩺 POST / — добавление пациента с формы Тильды
 // ===============================
