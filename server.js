@@ -576,9 +576,11 @@ app.post("/save-visit", async (req, res) => {
 
   const { patientId, date, startTime, endTime, doctorId, discount, services, finalAmount, visitId } = req.body;
   
-  console.log('Получены данные для сохранения визита:', {
+  console.log('=== НАЧАЛО СОХРАНЕНИЯ ВИЗИТА ===');
+  console.log('Данные:', {
     patientId, date, startTime, endTime, doctorId, discount, 
-    servicesCount: services?.length, finalAmount, visitId
+    servicesCount: services?.length, finalAmount, visitId,
+    isEdit: !!visitId
   });
 
   if (!patientId || !date || !doctorId || !services || services.length === 0) {
@@ -596,7 +598,7 @@ app.post("/save-visit", async (req, res) => {
     let visitIdToUse;
 
     if (visitId && !isNaN(parseInt(visitId))) {
-      console.log('Обновление существующего визита с ID:', visitId);
+      console.log('🔧 РЕЖИМ РЕДАКТИРОВАНИЯ визита с ID:', visitId);
       
       // Проверяем существование визита
       const [existingVisit] = await conn.execute(
@@ -608,7 +610,16 @@ app.post("/save-visit", async (req, res) => {
         throw new Error(`Визит с ID ${visitId} не найден`);
       }
 
-      // ОБНОВЛЯЕМ ВСЕ ПОЛЯ ВИЗИТА, включая итоговую сумму
+      console.log('📋 Удаляем ВСЕ старые услуги визита...');
+      // УДАЛЯЕМ ВСЕ УСЛУГИ ПЕРЕД ОБНОВЛЕНИЕМ
+      const [deleteResult] = await conn.execute(
+        `DELETE FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
+        [visitId]
+      );
+      console.log(`🗑️ Удалено услуг: ${deleteResult.affectedRows}`);
+
+      // Обновляем данные визита
+      console.log('🔄 Обновляем данные визита...');
       const [updateResult] = await conn.execute(
         `UPDATE Visits SET 
           vst_date = ?, vst_timestrart = ?, vst_timeend = ?, 
@@ -622,14 +633,10 @@ app.post("/save-visit", async (req, res) => {
       }
       
       visitIdToUse = visitId;
-      console.log('Визит обновлен, affected rows:', updateResult.affectedRows);
-
-      // Удаляем старые услуги
-      await conn.execute(`DELETE FROM Visit_Dental_Services WHERE vst_id_FK = ?`, [visitId]);
-      console.log('Старые услуги удалены');
+      console.log('✅ Визит обновлен');
 
     } else {
-      console.log('Создание нового визита');
+      console.log('🆕 РЕЖИМ СОЗДАНИЯ нового визита');
       // Создание нового визита
       const [visitResult] = await conn.execute(
         `INSERT INTO Visits (
@@ -640,7 +647,7 @@ app.post("/save-visit", async (req, res) => {
       );
       
       visitIdToUse = visitResult.insertId;
-      console.log('Создан новый визит с ID:', visitIdToUse);
+      console.log('✅ Создан новый визит с ID:', visitIdToUse);
     }
 
     // Проверяем, что visitIdToUse корректен
@@ -648,50 +655,65 @@ app.post("/save-visit", async (req, res) => {
       throw new Error('Не удалось получить ID визита');
     }
 
-    console.log('ID визита для услуг:', visitIdToUse);
+    console.log('🎯 ID визита для услуг:', visitIdToUse);
+    console.log('📦 Добавляем услуги:', services.length);
 
     // Добавляем услуги
-    console.log('Добавляем услуги:', services);
+    let addedServicesCount = 0;
     for (const service of services) {
-      console.log('Добавляем услугу:', service);
+      console.log(`➕ Добавляем услугу ${addedServicesCount + 1}:`, {
+        serviceId: service.serviceId,
+        quantity: service.quantity,
+        price: service.price,
+        total: service.total
+      });
       
       // Проверяем существование услуги
       const [serviceCheck] = await conn.execute(
-        `SELECT dse_id FROM Dental_Services WHERE dse_id = ?`,
+        `SELECT dse_id, dse_name FROM Dental_Services WHERE dse_id = ?`,
         [service.serviceId]
       );
       
       if (serviceCheck.length === 0) {
-        throw new Error(`Услуга с ID ${service.serviceId} не найдена`);
+        console.warn(`⚠️ Услуга с ID ${service.serviceId} не найдена, пропускаем`);
+        continue;
       }
 
-      // РАССЧИТЫВАЕМ СУММУ ДЛЯ УСЛУГИ, если не передана
+      console.log(`✅ Услуга найдена: ${serviceCheck[0].dse_name}`);
+
+      // Рассчитываем сумму для услуги
       let serviceTotal = service.total || 0;
       if (!serviceTotal && service.price && service.quantity) {
         serviceTotal = service.price * service.quantity;
       }
 
+      // Добавляем услугу
       const [serviceResult] = await conn.execute(
         `INSERT INTO Visit_Dental_Services (
           vst_id_FK, dse_id_FK, vds_quantity, vds_discount, vds_total_amount
         ) VALUES (?, ?, ?, 0, ?)`,
         [visitIdToUse, service.serviceId, service.quantity || 1, serviceTotal]
       );
-      console.log('Услуга добавлена, ID:', serviceResult.insertId);
+      
+      addedServicesCount++;
+      console.log(`✅ Услуга добавлена, ID в Visit_Dental_Services: ${serviceResult.insertId}`);
     }
 
+    console.log(`🎉 Всего добавлено услуг: ${addedServicesCount}`);
+
     await conn.commit();
-    console.log('Транзакция завершена успешно');
+    console.log('💾 Транзакция завершена успешно');
     
     res.status(200).json({ 
       status: "success", 
       message: "Визит успешно сохранен",
-      visitId: visitIdToUse
+      visitId: visitIdToUse,
+      servicesAdded: addedServicesCount
     });
     
   } catch (err) {
     await conn.rollback();
-    console.error("Ошибка при сохранении визита:", err);
+    console.error("❌ Ошибка при сохранении визита:", err);
     console.error("Детали ошибки:", {
       patientId, date, doctorId, visitId, 
       servicesCount: services?.length
