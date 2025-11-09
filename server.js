@@ -607,7 +607,7 @@ app.get("/get-visit-info", async (req, res) => {
 
 
 // ===============================
-// 📅 GET /get-work-schedules — получение рабочих расписаний врачей
+// 📅 GET /get-work-schedules — ИСПРАВЛЕННАЯ версия
 // ===============================
 app.get("/get-work-schedules", async (req, res) => {
   const { date, api_key } = req.query;
@@ -634,14 +634,18 @@ app.get("/get-work-schedules", async (req, res) => {
         sw.swk_status,
         ews.ele_id_FK as ele_id,
         CONCAT(e.ele_sername, ' ', e.ele_name, ' ', IFNULL(e.ele_patronymic, '')) as doctor_name,
-        p.psn_name
+        p.psn_name,
+        e.ele_sername,
+        e.ele_name,
+        e.ele_patronymic
       FROM Work_Schedules ws
-      JOIN Employee_Work_Schedules ews ON ws.wse_id = ews.wse_id_FK
-      JOIN Employees e ON ews.ele_id_FK = e.ele_id
-      JOIN Positions p ON e.psn_id_FK = p.psn_id
-      JOIN Status_Works sw ON ws.swk_id_FK = sw.swk_id
+      LEFT JOIN Employee_Work_Schedules ews ON ws.wse_id = ews.wse_id_FK
+      LEFT JOIN Employees e ON ews.ele_id_FK = e.ele_id
+      LEFT JOIN Positions p ON e.psn_id_FK = p.psn_id
+      LEFT JOIN Status_Works sw ON ws.swk_id_FK = sw.swk_id
       WHERE ws.wse_calend_numb = ?
-        AND e.ess_id_FK = 2 -- Только активные сотрудники
+        AND e.ess_id_FK = 1  -- Только активные сотрудники
+        AND sw.swk_status = 1  -- Только активные расписания
       ORDER BY e.ele_sername, ws.wse_workstart
       `,
       [date]
@@ -649,6 +653,7 @@ app.get("/get-work-schedules", async (req, res) => {
 
     await conn.end();
     res.json(rows);
+    
   } catch (err) {
     console.error("Ошибка в /get-work-schedules:", err);
     res.status(500).json({ error: "Server error", detail: err.message });
@@ -714,85 +719,6 @@ app.get("/get-visits", async (req, res) => {
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
-
-
-// ===============================
-// 🔍 GET /debug-work-schedules — отладка расписания
-// ===============================
-app.get("/debug-work-schedules", async (req, res) => {
-  const { date, api_key } = req.query;
-
-  if (process.env.API_KEY && api_key !== process.env.API_KEY) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  const conn = await mysql.createConnection(dbConfig);
-
-  try {
-    console.log('=== DEBUG Work_Schedules ===');
-    
-    // 1. Проверим записи в Work_Schedules
-    const [workSchedules] = await conn.execute(
-      `SELECT * FROM Work_Schedules WHERE wse_calend_numb = ?`,
-      [date || '2023-10-01']
-    );
-    console.log('Work_Schedules:', workSchedules);
-
-    // 2. Проверим связи с врачами
-    const [employeeSchedules] = await conn.execute(
-      `SELECT * FROM Employee_Work_Schedules WHERE wse_id_FK IN (
-        SELECT wse_id FROM Work_Schedules WHERE wse_calend_numb = ?
-      )`,
-      [date || '2023-10-01']
-    );
-    console.log('Employee_Work_Schedules:', employeeSchedules);
-
-    // 3. Проверим активных врачей
-    const [activeEmployees] = await conn.execute(
-      `SELECT * FROM Employees WHERE ess_id_FK = 1`
-    );
-    console.log('Active Employees:', activeEmployees);
-
-    // 4. Полный запрос как в основном endpoint
-    const [fullResult] = await conn.execute(
-      `
-      SELECT 
-        ws.wse_id,
-        ws.wse_calend_numb,
-        ws.wse_workstart,
-        ws.wse_workend,
-        ws.swk_id_FK,
-        sw.swk_status,
-        ews.ele_id_FK as ele_id,
-        CONCAT(e.ele_sername, ' ', e.ele_name, ' ', IFNULL(e.ele_patronymic, '')) as doctor_name,
-        p.psn_name
-      FROM Work_Schedules ws
-      LEFT JOIN Employee_Work_Schedules ews ON ws.wse_id = ews.wse_id_FK
-      LEFT JOIN Employees e ON ews.ele_id_FK = e.ele_id
-      LEFT JOIN Positions p ON e.psn_id_FK = p.psn_id
-      LEFT JOIN Status_Works sw ON ws.swk_id_FK = sw.swk_id
-      WHERE ws.wse_calend_numb = ?
-      `,
-      [date || '2023-10-01']
-    );
-    console.log('Full Result:', fullResult);
-
-    await conn.end();
-    
-    res.json({
-      workSchedules,
-      employeeSchedules, 
-      activeEmployees,
-      fullResult,
-      message: 'Debug information'
-    });
-    
-  } catch (err) {
-    console.error("Ошибка в /debug-work-schedules:", err);
-    res.status(500).json({ error: "Server error", detail: err.message });
-  }
-});
-
 
 
 // ===============================
