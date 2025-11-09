@@ -73,18 +73,15 @@ app.get("/get-patients", async (req, res) => {
 // ===============================
 // 🦷 GET /get-visit-info — данные по визитам конкретного пациента
 // ===============================
+// 🦷 GET /get-visit-info — ДИАГНОСТИЧЕСКАЯ ВЕРСИЯ
 app.get("/get-visit-info", async (req, res) => {
   const { lastname, firstname, patronymic, api_key } = req.query;
 
-  console.log('Получен запрос /get-visit-info с параметрами:', { lastname, firstname, patronymic, api_key });
+  console.log('=== GET-VISIT-INFO ЗАПРОС ===');
+  console.log('Параметры:', { lastname, firstname, patronymic });
 
   if (process.env.API_KEY && api_key !== process.env.API_KEY) {
-    console.log('Неавторизованный запрос: неверный API ключ');
     return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  if (!lastname || !firstname) {
-    return res.status(400).json({ error: "Не указаны фамилия и имя" });
   }
 
   const conn = await mysql.createConnection(dbConfig);
@@ -95,33 +92,23 @@ app.get("/get-visit-info", async (req, res) => {
       SELECT 
         vst.vst_id,
         CONCAT(ptt.ptt_sername, ' ', ptt.ptt_name, ' ', IFNULL(ptt.ptt_patronymic, '')) AS ФИО_пациента,
-        vss.vss_type AS Статус_визита,
         vst.vst_date AS Дата_визита,
         vst.vst_timestrart AS Начало_визита,
         vst.vst_timeend AS Конец_визита,
         CONCAT(emp.ele_sername, ' ', emp.ele_name, ' ', IFNULL(emp.ele_patronymic, '')) AS ФИО_врача,
         emp.ele_id,
-        vte.vte_type AS Тип_визита,
-        vst.vst_note AS Комментарий_к_визиту,
         ds.dse_id,
         ds.dse_name AS Наименование_услуги,
         vds.vds_quantity AS Количество_услуг,
-        vds.vds_discount AS Скидка_на_услугу,
         ds.dse_price AS Цена_услуги,
         vds.vds_total_amount AS Сумма_за_услугу,
         vst.vst_discount AS Скидка_на_визит,
-        vst.vst_final_sumservice AS Итоговая_сумма_визита,
-        pv.pvt_payment AS Итоговая_сумма_оплаты_визита,
-        pm.pmd_name AS Способ_оплаты_визита
+        vst.vst_final_sumservice AS Итоговая_сумма_визита
       FROM Visits vst
       JOIN Patients ptt ON vst.ptt_id_FK = ptt.ptt_id
-      JOIN Visit_Statuses vss ON vst.vss_id_FK = vss.vss_id
       JOIN Employees emp ON vst.ele_id_FK = emp.ele_id
-      JOIN Visit_Types vte ON vst.vte_id_FK = vte.vte_id
-      JOIN Visit_Dental_Services vds ON vst.vst_id = vds.vst_id_FK
-      JOIN Dental_Services ds ON vds.dse_id_FK = ds.dse_id
-      LEFT JOIN Paymet_Visits pv ON vst.vst_id = pv.vst_id_FK
-      LEFT JOIN Payment_Methods pm ON pv.pmd_id_FK = pm.pmd_id
+      LEFT JOIN Visit_Dental_Services vds ON vst.vst_id = vds.vst_id_FK
+      LEFT JOIN Dental_Services ds ON vds.dse_id_FK = ds.dse_id
       WHERE ptt.ptt_sername = ? 
         AND ptt.ptt_name = ?
         AND (ptt.ptt_patronymic = ? OR ? IS NULL OR ptt.ptt_patronymic IS NULL)
@@ -130,8 +117,32 @@ app.get("/get-visit-info", async (req, res) => {
       [lastname, firstname, patronymic || null, patronymic || null]
     );
 
-    console.log(`Найдено визитов: ${rows.length}`);
+    console.log(`📊 Найдено записей в БД: ${rows.length}`);
     
+    // Группируем для диагностики
+    const visitsMap = {};
+    rows.forEach(row => {
+      if (!visitsMap[row.vst_id]) {
+        visitsMap[row.vst_id] = {
+          visitId: row.vst_id,
+          date: row.Дата_визита,
+          services: []
+        };
+      }
+      if (row.dse_id) {
+        visitsMap[row.vst_id].services.push({
+          serviceId: row.dse_id,
+          name: row.Наименование_услуги,
+          quantity: row.Количество_услуг
+        });
+      }
+    });
+
+    console.log('📈 Группировка по визитам:');
+    Object.values(visitsMap).forEach(visit => {
+      console.log(`  Визит ${visit.visitId}: ${visit.services.length} услуг`);
+    });
+
     await conn.end();
     res.json(rows);
   } catch (err) {
@@ -569,7 +580,6 @@ app.get("/get-doctors", async (req, res) => {
 // 💾 POST /save-visit — сохранение визита (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 // ===============================
 app.post("/save-visit", async (req, res) => {
-  // Проверка API ключа
   if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
     return res.status(401).json({ error: "Unauthorized" });
   }
@@ -577,49 +587,52 @@ app.post("/save-visit", async (req, res) => {
   const { patientId, date, startTime, endTime, doctorId, discount, services, finalAmount, visitId } = req.body;
   
   console.log('=== НАЧАЛО СОХРАНЕНИЯ ВИЗИТА ===');
-  console.log('Данные:', {
-    patientId, date, startTime, endTime, doctorId, discount, 
-    servicesCount: services?.length, finalAmount, visitId,
-    isEdit: !!visitId
-  });
-
-  if (!patientId || !date || !doctorId || !services || services.length === 0) {
-    return res.status(400).json({ 
-      error: "Не все обязательные поля заполнены",
-      details: { patientId: !!patientId, date: !!date, doctorId: !!doctorId, services: services?.length }
-    });
-  }
+  console.log('Данные:', { visitId, servicesCount: services?.length });
 
   const conn = await mysql.createConnection(dbConfig);
 
   try {
     await conn.beginTransaction();
 
+    // ДИАГНОСТИКА: Проверим текущее состояние визита ДО изменений
+    if (visitId) {
+      console.log('🔍 ДИАГНОСТИКА: Проверяем текущие услуги визита...');
+      const [currentServices] = await conn.execute(
+        `SELECT vds_id, dse_id_FK, vds_quantity FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
+        [visitId]
+      );
+      console.log(`📊 Текущие услуги визита ${visitId}:`, currentServices);
+    }
+
     let visitIdToUse;
 
     if (visitId && !isNaN(parseInt(visitId))) {
-      console.log('🔧 РЕЖИМ РЕДАКТИРОВАНИЯ визита с ID:', visitId);
+      console.log('🔧 РЕДАКТИРОВАНИЕ визита ID:', visitId);
       
-      // Проверяем существование визита
-      const [existingVisit] = await conn.execute(
-        `SELECT vst_id FROM Visits WHERE vst_id = ?`,
+      // Двойная проверка удаления
+      console.log('🗑️ УДАЛЕНИЕ старых услуг...');
+      const [deleteBefore] = await conn.execute(
+        `SELECT COUNT(*) as count_before FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
         [visitId]
       );
-      
-      if (existingVisit.length === 0) {
-        throw new Error(`Визит с ID ${visitId} не найден`);
-      }
+      console.log(`Услуг до удаления: ${deleteBefore[0].count_before}`);
 
-      console.log('📋 Удаляем ВСЕ старые услуги визита...');
-      // УДАЛЯЕМ ВСЕ УСЛУГИ ПЕРЕД ОБНОВЛЕНИЕМ
+      // Удаляем ВСЕ услуги
       const [deleteResult] = await conn.execute(
         `DELETE FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
         [visitId]
       );
-      console.log(`🗑️ Удалено услуг: ${deleteResult.affectedRows}`);
+      console.log(`🗑️ Удалено записей: ${deleteResult.affectedRows}`);
 
-      // Обновляем данные визита
-      console.log('🔄 Обновляем данные визита...');
+      // Проверяем, что удалилось
+      const [deleteAfter] = await conn.execute(
+        `SELECT COUNT(*) as count_after FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
+        [visitId]
+      );
+      console.log(`Услуг после удаления: ${deleteAfter[0].count_after}`);
+
+      // Обновляем визит
+      console.log('🔄 Обновление данных визита...');
       const [updateResult] = await conn.execute(
         `UPDATE Visits SET 
           vst_date = ?, vst_timestrart = ?, vst_timeend = ?, 
@@ -628,16 +641,11 @@ app.post("/save-visit", async (req, res) => {
         [date, startTime, endTime, doctorId, discount || 0, finalAmount || 0, visitId]
       );
       
-      if (updateResult.affectedRows === 0) {
-        throw new Error('Визит не найден для обновления');
-      }
-      
       visitIdToUse = visitId;
       console.log('✅ Визит обновлен');
 
     } else {
-      console.log('🆕 РЕЖИМ СОЗДАНИЯ нового визита');
-      // Создание нового визита
+      console.log('🆕 СОЗДАНИЕ нового визита');
       const [visitResult] = await conn.execute(
         `INSERT INTO Visits (
           ptt_id_FK, ele_id_FK, vst_date, vst_timestrart, vst_timeend,
@@ -645,89 +653,53 @@ app.post("/save-visit", async (req, res) => {
         ) VALUES (?, ?, ?, ?, ?, 1, 2, ?, ?)`,
         [patientId, doctorId, date, startTime, endTime, discount || 0, finalAmount || 0]
       );
-      
       visitIdToUse = visitResult.insertId;
-      console.log('✅ Создан новый визит с ID:', visitIdToUse);
+      console.log('✅ Создан визит ID:', visitIdToUse);
     }
-
-    // Проверяем, что visitIdToUse корректен
-    if (!visitIdToUse) {
-      throw new Error('Не удалось получить ID визита');
-    }
-
-    console.log('🎯 ID визита для услуг:', visitIdToUse);
-    console.log('📦 Добавляем услуги:', services.length);
 
     // Добавляем услуги
-    let addedServicesCount = 0;
+    console.log('📦 Добавление услуг:', services.length);
     for (const service of services) {
-      console.log(`➕ Добавляем услугу ${addedServicesCount + 1}:`, {
-        serviceId: service.serviceId,
-        quantity: service.quantity,
-        price: service.price,
-        total: service.total
-      });
+      console.log(`➕ Услуга: ${service.serviceId}, количество: ${service.quantity}`);
       
-      // Проверяем существование услуги
-      const [serviceCheck] = await conn.execute(
-        `SELECT dse_id, dse_name FROM Dental_Services WHERE dse_id = ?`,
-        [service.serviceId]
-      );
-      
-      if (serviceCheck.length === 0) {
-        console.warn(`⚠️ Услуга с ID ${service.serviceId} не найдена, пропускаем`);
-        continue;
-      }
-
-      console.log(`✅ Услуга найдена: ${serviceCheck[0].dse_name}`);
-
-      // Рассчитываем сумму для услуги
-      let serviceTotal = service.total || 0;
-      if (!serviceTotal && service.price && service.quantity) {
-        serviceTotal = service.price * service.quantity;
-      }
-
-      // Добавляем услугу
       const [serviceResult] = await conn.execute(
         `INSERT INTO Visit_Dental_Services (
           vst_id_FK, dse_id_FK, vds_quantity, vds_discount, vds_total_amount
         ) VALUES (?, ?, ?, 0, ?)`,
-        [visitIdToUse, service.serviceId, service.quantity || 1, serviceTotal]
+        [visitIdToUse, service.serviceId, service.quantity || 1, service.total || 0]
       );
-      
-      addedServicesCount++;
-      console.log(`✅ Услуга добавлена, ID в Visit_Dental_Services: ${serviceResult.insertId}`);
+      console.log(`✅ Добавлена услуга ID: ${serviceResult.insertId}`);
     }
 
-    console.log(`🎉 Всего добавлено услуг: ${addedServicesCount}`);
+    // ФИНАЛЬНАЯ ПРОВЕРКА
+    console.log('🔍 ФИНАЛЬНАЯ ПРОВЕРКА...');
+    const [finalServices] = await conn.execute(
+      `SELECT vds_id, dse_id_FK, vds_quantity FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
+      [visitIdToUse]
+    );
+    console.log(`📊 Итоговые услуги визита ${visitIdToUse}:`, finalServices);
 
     await conn.commit();
-    console.log('💾 Транзакция завершена успешно');
+    console.log('💾 ТРАНЗАКЦИЯ УСПЕШНА');
     
     res.status(200).json({ 
       status: "success", 
       message: "Визит успешно сохранен",
       visitId: visitIdToUse,
-      servicesAdded: addedServicesCount
+      finalServicesCount: finalServices.length
     });
     
   } catch (err) {
     await conn.rollback();
-    console.error("❌ Ошибка при сохранении визита:", err);
-    console.error("Детали ошибки:", {
-      patientId, date, doctorId, visitId, 
-      servicesCount: services?.length
-    });
+    console.error("❌ ОШИБКА:", err);
     res.status(500).json({ 
-      error: "Ошибка сервера при сохранении визита", 
-      detail: err.message,
-      code: err.code
+      error: "Ошибка сервера", 
+      detail: err.message
     });
   } finally {
     await conn.end();
   }
 });
-
 // ===============================
 // 💳 POST /process-payment — обработка оплаты
 // ===============================
@@ -825,6 +797,11 @@ app.get("/get-patient-id", async (req, res) => {
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
+
+
+
+
+
 
 // ===============================
 // 🚀 Запуск сервера
