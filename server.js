@@ -543,7 +543,7 @@ app.get("/get-patient-full", async (req, res) => {
 
 
 // ===============================
-// 🦷 GET /get-visit-info — данные по визитам конкретного пациента
+// 🦷 GET /get-visit-info — данные по визитам конкретного пациента (ОБНОВЛЕННЫЙ)
 // ===============================
 app.get("/get-visit-info", async (req, res) => {
   const { lastname, firstname, patronymic, api_key } = req.query;
@@ -562,14 +562,17 @@ app.get("/get-visit-info", async (req, res) => {
     const [rows] = await conn.execute(
       `
       SELECT 
+        vst.vst_id,
         CONCAT(ptt.ptt_sername, ' ', ptt.ptt_name, ' ', IFNULL(ptt.ptt_patronymic, '')) AS ФИО_пациента,
         vss.vss_type AS Статус_визита,
         vst.vst_date AS Дата_визита,
         vst.vst_timestrart AS Начало_визита,
         vst.vst_timeend AS Конец_визита,
         CONCAT(emp.ele_sername, ' ', emp.ele_name, ' ', IFNULL(emp.ele_patronymic, '')) AS ФИО_врача,
+        emp.ele_id,
         vte.vte_type AS Тип_визита,
         vst.vst_note AS Комментарий_к_визиту,
+        ds.dse_id,
         ds.dse_name AS Наименование_услуги,
         vds.vds_quantity AS Количество_услуг,
         vds.vds_discount AS Скидка_на_услугу,
@@ -808,7 +811,46 @@ app.post("/process-payment", async (req, res) => {
 
 
 
+// ===============================
+// 👤 GET /get-patient-id — получение ID пациента по ФИО
+// ===============================
+app.get("/get-patient-id", async (req, res) => {
+  const { lastname, firstname, patronymic, api_key } = req.query;
 
+  if (process.env.API_KEY && api_key !== process.env.API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  if (!lastname || !firstname) {
+    return res.status(400).json({ error: "Не указаны фамилия и имя" });
+  }
+
+  const conn = await mysql.createConnection(dbConfig);
+
+  try {
+    const [rows] = await conn.execute(
+      `
+      SELECT ptt_id as patient_id FROM Patients 
+      WHERE ptt_sername = ? 
+        AND ptt_name = ?
+        AND (ptt_patronymic = ? OR ? IS NULL OR ptt_patronymic IS NULL)
+      LIMIT 1
+      `,
+      [lastname, firstname, patronymic || null, patronymic || null]
+    );
+
+    await conn.end();
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Пациент не найден" });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Ошибка в /get-patient-id:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
 
 
 
