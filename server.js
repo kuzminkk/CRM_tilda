@@ -608,7 +608,7 @@ app.post("/save-visit", async (req, res) => {
         throw new Error(`Визит с ID ${visitId} не найден`);
       }
 
-      // Обновление существующего визита
+      // ОБНОВЛЯЕМ ВСЕ ПОЛЯ ВИЗИТА, включая итоговую сумму
       const [updateResult] = await conn.execute(
         `UPDATE Visits SET 
           vst_date = ?, vst_timestrart = ?, vst_timeend = ?, 
@@ -665,11 +665,17 @@ app.post("/save-visit", async (req, res) => {
         throw new Error(`Услуга с ID ${service.serviceId} не найдена`);
       }
 
+      // РАССЧИТЫВАЕМ СУММУ ДЛЯ УСЛУГИ, если не передана
+      let serviceTotal = service.total || 0;
+      if (!serviceTotal && service.price && service.quantity) {
+        serviceTotal = service.price * service.quantity;
+      }
+
       const [serviceResult] = await conn.execute(
         `INSERT INTO Visit_Dental_Services (
           vst_id_FK, dse_id_FK, vds_quantity, vds_discount, vds_total_amount
         ) VALUES (?, ?, ?, 0, ?)`,
-        [visitIdToUse, service.serviceId, service.quantity || 1, service.total || 0]
+        [visitIdToUse, service.serviceId, service.quantity || 1, serviceTotal]
       );
       console.log('Услуга добавлена, ID:', serviceResult.insertId);
     }
