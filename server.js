@@ -854,6 +854,77 @@ app.get("/get-patient-id", async (req, res) => {
 
 
 
+// В функции saveVisit добавьте console.log для отладки:
+const saveVisit = async () => {
+  const visitData = {
+    patientId: currentPatientId,
+    date: document.getElementById('visit-date').value,
+    startTime: document.getElementById('visit-time-start').value,
+    endTime: document.getElementById('visit-time-end').value,
+    discount: parseFloat(document.getElementById('visit-discount').value) || 0,
+    doctorId: document.getElementById('visit-doctor').value,
+    services: [],
+    finalAmount: parseFormattedCurrency(visitTotal.textContent)
+  };
+
+  if (currentVisit && currentVisit.id) {
+    visitData.visitId = currentVisit.id;
+  }
+
+  document.querySelectorAll('.service-row').forEach(row => {
+    const select = row.querySelector('.service-select');
+    const quantityInput = row.querySelector('.service-quantity-input');
+    const priceDisplay = row.querySelector('.service-price-display');
+    
+    if (select.value) {
+      visitData.services.push({
+        serviceId: select.value,
+        quantity: parseInt(quantityInput.value) || 1,
+        price: parseFormattedCurrency(priceDisplay.textContent),
+        total: parseFormattedCurrency(row.querySelector('.service-total-display').textContent)
+      });
+    }
+  });
+
+  console.log('Данные для сохранения:', visitData); // Добавьте эту строку для отладки
+
+  if (visitData.services.length === 0) {
+    showNotification('Добавьте хотя бы одну услугу', 'error');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/save-visit?api_key=${API_KEY}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(visitData)
+    });
+
+    console.log('Статус ответа:', response.status); // Добавьте эту строку
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Текст ошибки:', errorText); // Добавьте эту строку
+      throw new Error('Ошибка сохранения визита: ' + errorText);
+    }
+
+    const result = await response.json();
+    console.log('Результат сохранения:', result); // Добавьте эту строку
+    
+    showNotification('Визит успешно сохранен', 'success');
+    closeModals();
+    await loadPatientVisits(lastname, firstname, patronymic);
+    
+  } catch (err) {
+    console.error('Ошибка сохранения визита:', err);
+    showNotification('Ошибка сохранения визита: ' + err.message, 'error');
+  }
+};
+
+
+
 
 // ===============================
 // 🚀 Запуск сервера
