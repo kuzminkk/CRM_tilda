@@ -381,46 +381,6 @@ app.get("/get-employees", async (req, res) => {
 });
 
 
-// ===============================
-// 👤 GET /get-patient-full — получение полных данных пациента по ФИО
-// ===============================
-app.get("/get-patient-full", async (req, res) => {
-  const { lastname, firstname, patronymic, api_key } = req.query;
-
-  if (process.env.API_KEY && api_key !== process.env.API_KEY) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  if (!lastname || !firstname) {
-    return res.status(400).json({ error: "Не указаны фамилия и имя" });
-  }
-
-  const conn = await mysql.createConnection(dbConfig);
-
-  try {
-    const [rows] = await conn.execute(
-      `
-      SELECT * FROM Patients 
-      WHERE ptt_sername = ? 
-        AND ptt_name = ?
-        AND (ptt_patronymic = ? OR ? IS NULL OR ptt_patronymic IS NULL)
-      LIMIT 1
-      `,
-      [lastname, firstname, patronymic || null, patronymic || null]
-    );
-
-    await conn.end();
-    
-    if (rows.length === 0) {
-      return res.status(404).json({ error: "Пациент не найден" });
-    }
-
-    res.json(rows[0]);
-  } catch (err) {
-    console.error("Ошибка в /get-patient-full:", err);
-    res.status(500).json({ error: "Server error", detail: err.message });
-  }
-});
 
 // ===============================
 // ✏️ PUT /update-patient — обновление данных пациента
@@ -678,19 +638,20 @@ app.get("/get-doctors", async (req, res) => {
 });
 
 // ===============================
-// 💾 POST /save-visit — сохранение визита (ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ)
+// 💾 POST /save-visit — сохранение визита (ИСПРАВЛЕННЫЙ)
 // ===============================
 app.post("/save-visit", async (req, res) => {
+  // ПЕРЕНЕСТИ проверку API ключа в начало
+  if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
   const { patientId, date, startTime, endTime, doctorId, discount, services, finalAmount, visitId } = req.body;
   
   console.log('Получены данные для сохранения визита:', {
     patientId, date, startTime, endTime, doctorId, discount, 
     servicesCount: services?.length, finalAmount, visitId
   });
-
-  if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
 
   if (!patientId || !date || !doctorId || !services || services.length === 0) {
     return res.status(400).json({ 
@@ -714,14 +675,20 @@ app.post("/save-visit", async (req, res) => {
           vst_date = ?, vst_timestrart = ?, vst_timeend = ?, 
           ele_id_FK = ?, vst_discount = ?, vst_final_sumservice = ?
          WHERE vst_id = ?`,
-        [date, startTime, endTime, doctorId, discount, finalAmount, visitId]
+        [date, startTime, endTime, doctorId, discount || 0, finalAmount || 0, visitId]
       );
+      
+      if (updateResult.affectedRows === 0) {
+        throw new Error('Визит не найден для обновления');
+      }
+      
       visitIdToUse = visitId;
       console.log('Визит обновлен, affected rows:', updateResult.affectedRows);
 
       // Удаляем старые услуги
-      const [deleteResult] = await conn.execute(`DELETE FROM Visit_Dental_Services WHERE vst_id_FK = ?`, [visitId]);
-      console.log('Удалено старых услуг:', deleteResult.affectedRows);
+      await conn.execute(`DELETE FROM Visit_Dental_Services WHERE vst_id_FK = ?`, [visitId]);
+      console.log('Старые услуги удалены');
+
     } else {
       console.log('Создание нового визита');
       // Создание нового визита
@@ -730,28 +697,40 @@ app.post("/save-visit", async (req, res) => {
           ptt_id_FK, ele_id_FK, vst_date, vst_timestrart, vst_timeend,
           vte_id_FK, vss_id_FK, vst_discount, vst_final_sumservice
         ) VALUES (?, ?, ?, ?, ?, 1, 2, ?, ?)`,
-        [patientId, doctorId, date, startTime, endTime, discount, finalAmount]
+        [patientId, doctorId, date, startTime, endTime, discount || 0, finalAmount || 0]
       );
+      
       visitIdToUse = visitResult.insertId;
-      console.log('Создан новый визит с ID:', visitIdToUse, 'Result:', visitResult);
+      console.log('Создан новый визит с ID:', visitIdToUse);
     }
-
-    console.log('ID визита для услуг:', visitIdToUse);
 
     // Проверяем, что visitIdToUse корректен
     if (!visitIdToUse) {
       throw new Error('Не удалось получить ID визита');
     }
 
+    console.log('ID визита для услуг:', visitIdToUse);
+
     // Добавляем услуги
     console.log('Добавляем услуги:', services);
     for (const service of services) {
       console.log('Добавляем услугу:', service);
+      
+      // Проверяем существование услуги
+      const [serviceCheck] = await conn.execute(
+        `SELECT dse_id FROM Dental_Services WHERE dse_id = ?`,
+        [service.serviceId]
+      );
+      
+      if (serviceCheck.length === 0) {
+        throw new Error(`Услуга с ID ${service.serviceId} не найдена`);
+      }
+
       const [serviceResult] = await conn.execute(
         `INSERT INTO Visit_Dental_Services (
           vst_id_FK, dse_id_FK, vds_quantity, vds_discount, vds_total_amount
         ) VALUES (?, ?, ?, 0, ?)`,
-        [visitIdToUse, service.serviceId, service.quantity, service.total]
+        [visitIdToUse, service.serviceId, service.quantity || 1, service.total || 0]
       );
       console.log('Услуга добавлена, ID:', serviceResult.insertId);
     }
@@ -770,12 +749,11 @@ app.post("/save-visit", async (req, res) => {
     console.error("Ошибка при сохранении визита:", err);
     console.error("Детали ошибки:", {
       patientId, date, doctorId, visitId, 
-      visitIdToUse, servicesCount: services?.length
+      servicesCount: services?.length
     });
     res.status(500).json({ 
       error: "Ошибка сервера при сохранении визита", 
       detail: err.message,
-      sql: err.sql,
       code: err.code
     });
   } finally {
