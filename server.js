@@ -71,9 +71,8 @@ app.get("/get-patients", async (req, res) => {
 });
 
 // ===============================
-// 🦷 GET /get-visit-info — данные по визитам конкретного пациента
+// 🦷 GET /get-visit-info — данные по визитам конкретного пациента (ОБНОВЛЕННАЯ ВЕРСИЯ)
 // ===============================
-// 🦷 GET /get-visit-info — ДИАГНОСТИЧЕСКАЯ ВЕРСИЯ
 app.get("/get-visit-info", async (req, res) => {
   const { lastname, firstname, patronymic, api_key } = req.query;
 
@@ -103,12 +102,21 @@ app.get("/get-visit-info", async (req, res) => {
         ds.dse_price AS Цена_услуги,
         vds.vds_total_amount AS Сумма_за_услугу,
         vst.vst_discount AS Скидка_на_визит,
-        vst.vst_final_sumservice AS Итоговая_сумма_визита
+        vst.vst_final_sumservice AS Итоговая_сумма_визита,
+        COALESCE(pv.pvt_payment, 0) AS Итоговая_сумма_оплаты_визита,
+        COALESCE(pm.pmd_name, 'не оплачено') AS Способ_оплаты_визита,
+        vst.vst_note AS Комментарий_к_визиту,
+        vss.vss_type AS Статус_визита,
+        vte.vte_type AS Тип_визита
       FROM Visits vst
       JOIN Patients ptt ON vst.ptt_id_FK = ptt.ptt_id
       JOIN Employees emp ON vst.ele_id_FK = emp.ele_id
+      JOIN Visit_Statuses vss ON vst.vss_id_FK = vss.vss_id
+      JOIN Visit_Types vte ON vst.vte_id_FK = vte.vte_id
       LEFT JOIN Visit_Dental_Services vds ON vst.vst_id = vds.vst_id_FK
       LEFT JOIN Dental_Services ds ON vds.dse_id_FK = ds.dse_id
+      LEFT JOIN Paymet_Visits pv ON vst.vst_id = pv.vst_id_FK
+      LEFT JOIN Payment_Methods pm ON pv.pmd_id_FK = pm.pmd_id
       WHERE ptt.ptt_sername = ? 
         AND ptt.ptt_name = ?
         AND (ptt.ptt_patronymic = ? OR ? IS NULL OR ptt.ptt_patronymic IS NULL)
@@ -126,21 +134,35 @@ app.get("/get-visit-info", async (req, res) => {
         visitsMap[row.vst_id] = {
           visitId: row.vst_id,
           date: row.Дата_визита,
+          startTime: row.Начало_визита,
+          endTime: row.Конец_визита,
+          doctor: row.ФИО_врача,
+          doctorId: row.ele_id,
+          status: row.Статус_визита,
+          visitType: row.Тип_визита,
+          comment: row.Комментарий_к_визиту,
+          discount: row.Скидка_на_визит,
+          totalAmount: row.Итоговая_сумма_визита,
+          paymentAmount: row.Итоговая_сумма_оплаты_визита,
+          paymentMethod: row.Способ_оплаты_визита,
           services: []
         };
       }
       if (row.dse_id) {
         visitsMap[row.vst_id].services.push({
-          serviceId: row.dse_id,
+          dse_id: row.dse_id,
           name: row.Наименование_услуги,
-          quantity: row.Количество_услуг
+          quantity: row.Количество_услуг || 1,
+          discount: row.Скидка_на_услугу || 0,
+          price: row.Цена_услуги || 0,
+          total: row.Сумма_за_услугу || 0
         });
       }
     });
 
     console.log('📈 Группировка по визитам:');
     Object.values(visitsMap).forEach(visit => {
-      console.log(`  Визит ${visit.visitId}: ${visit.services.length} услуг`);
+      console.log(`  Визит ${visit.visitId}: ${visit.services.length} услуг, оплата: ${visit.paymentAmount} (${visit.paymentMethod})`);
     });
 
     await conn.end();
@@ -700,12 +722,16 @@ app.post("/save-visit", async (req, res) => {
     await conn.end();
   }
 });
+
 // ===============================
-// 💳 POST /process-payment — обработка оплаты
+// 💳 POST /process-payment — обработка оплаты (ОБНОВЛЕННАЯ ВЕРСИЯ)
 // ===============================
 app.post("/process-payment", async (req, res) => {
   const { visitId, paymentMethod, amount } = req.body;
   
+  console.log('=== ОБРАБОТКА ОПЛАТЫ ===');
+  console.log('Данные:', { visitId, paymentMethod, amount });
+
   if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
     return res.status(401).json({ error: "Unauthorized" });
   }
@@ -719,35 +745,52 @@ app.post("/process-payment", async (req, res) => {
   try {
     await conn.beginTransaction();
 
+    // Проверяем существование визита
+    const [visitCheck] = await conn.execute(
+      `SELECT vst_id FROM Visits WHERE vst_id = ?`,
+      [visitId]
+    );
+    
+    if (visitCheck.length === 0) {
+      throw new Error(`Визит с ID ${visitId} не найден`);
+    }
+
+    console.log('✅ Визит найден, продолжаем оплату...');
+
     // Создаем квитанцию об оплате
     const [receiptResult] = await conn.execute(
       `INSERT INTO Payment_Receipts (prt_date_creation) VALUES (CURDATE())`
     );
     const receiptId = receiptResult.insertId;
+    console.log('✅ Создана квитанция ID:', receiptId);
 
     // Добавляем запись об оплате
-    await conn.execute(
+    const [paymentResult] = await conn.execute(
       `INSERT INTO Paymet_Visits (pvt_payment, pmd_id_FK, vst_id_FK) VALUES (?, ?, ?)`,
       [amount, paymentMethod, visitId]
     );
+    console.log('✅ Добавлена запись об оплате ID:', paymentResult.insertId);
 
-    // Обновляем визит - добавляем ссылку на квитанцию и сумму оплаты
-    await conn.execute(
-      `UPDATE Visits SET prt_id_FK = ?, vst_payment_amount = ? WHERE vst_id = ?`,
-      [receiptId, amount, visitId]
+    // Обновляем визит - добавляем ссылку на квитанцию
+    const [updateResult] = await conn.execute(
+      `UPDATE Visits SET prt_id_FK = ? WHERE vst_id = ?`,
+      [receiptId, visitId]
     );
+    console.log('✅ Визит обновлен, affected rows:', updateResult.affectedRows);
 
     await conn.commit();
+    console.log('💾 ОПЛАТА УСПЕШНО ОБРАБОТАНА');
     
     res.status(200).json({ 
       status: "success", 
       message: "Оплата успешно обработана",
-      receiptId: receiptId
+      receiptId: receiptId,
+      paymentId: paymentResult.insertId
     });
     
   } catch (err) {
     await conn.rollback();
-    console.error("Ошибка при обработке оплаты:", err);
+    console.error("❌ ОШИБКА ОПЛАТЫ:", err);
     res.status(500).json({ 
       error: "Ошибка сервера при обработке оплаты", 
       detail: err.message 
@@ -797,11 +840,6 @@ app.get("/get-patient-id", async (req, res) => {
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
-
-
-
-
-
 
 // ===============================
 // 🚀 Запуск сервера
