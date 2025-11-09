@@ -640,8 +640,7 @@ app.get("/get-doctors", async (req, res) => {
 // ===============================
 // 💾 POST /save-visit — сохранение визита (ИСПРАВЛЕННЫЙ)
 // ===============================
-app.post("/save-visit", async (req, res) => {
-  // ПЕРЕНЕСТИ проверку API ключа в начало
+  // Проверка API ключа
   if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
     return res.status(401).json({ error: "Unauthorized" });
   }
@@ -667,8 +666,19 @@ app.post("/save-visit", async (req, res) => {
 
     let visitIdToUse;
 
-    if (visitId) {
+    if (visitId && !isNaN(parseInt(visitId))) {
       console.log('Обновление существующего визита с ID:', visitId);
+      
+      // Проверяем существование визита
+      const [existingVisit] = await conn.execute(
+        `SELECT vst_id FROM Visits WHERE vst_id = ?`,
+        [visitId]
+      );
+      
+      if (existingVisit.length === 0) {
+        throw new Error(`Визит с ID ${visitId} не найден`);
+      }
+
       // Обновление существующего визита
       const [updateResult] = await conn.execute(
         `UPDATE Visits SET 
