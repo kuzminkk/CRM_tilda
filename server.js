@@ -841,6 +841,86 @@ app.get("/get-patient-id", async (req, res) => {
   }
 });
 
+
+// 🧹 POST /cleanup-duplicates — очистка дублирующихся услуг
+app.post("/cleanup-duplicates", async (req, res) => {
+  if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { visitId } = req.body;
+  const conn = await mysql.createConnection(dbConfig);
+
+  try {
+    await conn.beginTransaction();
+
+    console.log('🧹 ОЧИСТКА ДУБЛИКАТОВ для визита:', visitId);
+
+    // Находим дубликаты
+    const [duplicates] = await conn.execute(
+      `SELECT vds_id, dse_id_FK, vds_quantity, COUNT(*) as count
+       FROM Visit_Dental_Services 
+       WHERE vst_id_FK = ? 
+       GROUP BY dse_id_FK, vds_quantity 
+       HAVING COUNT(*) > 1`,
+      [visitId]
+    );
+
+    console.log('Найдено дубликатов:', duplicates.length);
+
+    let totalDeleted = 0;
+
+    if (duplicates.length > 0) {
+      // Оставляем только первую запись для каждой комбинации услуга+количество
+      for (const dup of duplicates) {
+        const [toDelete] = await conn.execute(
+          `DELETE FROM Visit_Dental_Services 
+           WHERE vst_id_FK = ? AND dse_id_FK = ? AND vds_quantity = ?
+           AND vds_id != (
+             SELECT min_id FROM (
+               SELECT MIN(vds_id) as min_id 
+               FROM Visit_Dental_Services 
+               WHERE vst_id_FK = ? AND dse_id_FK = ? AND vds_quantity = ?
+             ) as temp
+           )`,
+          [visitId, dup.dse_id_FK, dup.vds_quantity, visitId, dup.dse_id_FK, dup.vds_quantity]
+        );
+        console.log(`Удалено дубликатов для услуги ${dup.dse_id_FK}: ${toDelete.affectedRows}`);
+        totalDeleted += toDelete.affectedRows;
+      }
+    }
+
+    await conn.commit();
+
+    // Проверяем результат
+    const [finalServices] = await conn.execute(
+      `SELECT vds_id, dse_id_FK, vds_quantity FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
+      [visitId]
+    );
+
+    console.log(`Осталось услуг после очистки: ${finalServices.length}`);
+
+    res.status(200).json({
+      status: "success",
+      message: "Дубликаты очищены",
+      deletedCount: totalDeleted,
+      remainingServices: finalServices.length,
+      services: finalServices
+    });
+
+  } catch (err) {
+    await conn.rollback();
+    console.error("Ошибка очистки дубликатов:", err);
+    res.status(500).json({ 
+      error: "Ошибка очистки дубликатов", 
+      detail: err.message 
+    });
+  } finally {
+    await conn.end();
+  }
+});
+
+
 // ===============================
 // 🚀 Запуск сервера
 // ===============================
