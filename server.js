@@ -678,17 +678,25 @@ app.get("/get-doctors", async (req, res) => {
 });
 
 // ===============================
-// 💾 POST /save-visit — сохранение визита (ИСПРАВЛЕННЫЙ)
+// 💾 POST /save-visit — сохранение визита (ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ)
 // ===============================
 app.post("/save-visit", async (req, res) => {
   const { patientId, date, startTime, endTime, doctorId, discount, services, finalAmount, visitId } = req.body;
   
+  console.log('Получены данные для сохранения визита:', {
+    patientId, date, startTime, endTime, doctorId, discount, 
+    servicesCount: services?.length, finalAmount, visitId
+  });
+
   if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
   if (!patientId || !date || !doctorId || !services || services.length === 0) {
-    return res.status(400).json({ error: "Не все обязательные поля заполнены" });
+    return res.status(400).json({ 
+      error: "Не все обязательные поля заполнены",
+      details: { patientId: !!patientId, date: !!date, doctorId: !!doctorId, services: services?.length }
+    });
   }
 
   const conn = await mysql.createConnection(dbConfig);
@@ -699,8 +707,9 @@ app.post("/save-visit", async (req, res) => {
     let visitIdToUse;
 
     if (visitId) {
+      console.log('Обновление существующего визита с ID:', visitId);
       // Обновление существующего визита
-      await conn.execute(
+      const [updateResult] = await conn.execute(
         `UPDATE Visits SET 
           vst_date = ?, vst_timestrart = ?, vst_timeend = ?, 
           ele_id_FK = ?, vst_discount = ?, vst_final_sumservice = ?
@@ -708,10 +717,13 @@ app.post("/save-visit", async (req, res) => {
         [date, startTime, endTime, doctorId, discount, finalAmount, visitId]
       );
       visitIdToUse = visitId;
+      console.log('Визит обновлен, affected rows:', updateResult.affectedRows);
 
       // Удаляем старые услуги
-      await conn.execute(`DELETE FROM Visit_Dental_Services WHERE vst_id_FK = ?`, [visitId]);
+      const [deleteResult] = await conn.execute(`DELETE FROM Visit_Dental_Services WHERE vst_id_FK = ?`, [visitId]);
+      console.log('Удалено старых услуг:', deleteResult.affectedRows);
     } else {
+      console.log('Создание нового визита');
       // Создание нового визита
       const [visitResult] = await conn.execute(
         `INSERT INTO Visits (
@@ -721,22 +733,31 @@ app.post("/save-visit", async (req, res) => {
         [patientId, doctorId, date, startTime, endTime, discount, finalAmount]
       );
       visitIdToUse = visitResult.insertId;
+      console.log('Создан новый визит с ID:', visitIdToUse, 'Result:', visitResult);
     }
 
-    console.log('ID визита для услуг:', visitIdToUse); // Для отладки
+    console.log('ID визита для услуг:', visitIdToUse);
+
+    // Проверяем, что visitIdToUse корректен
+    if (!visitIdToUse) {
+      throw new Error('Не удалось получить ID визита');
+    }
 
     // Добавляем услуги
+    console.log('Добавляем услуги:', services);
     for (const service of services) {
-      console.log('Добавляем услугу:', service); // Для отладки
-      await conn.execute(
+      console.log('Добавляем услугу:', service);
+      const [serviceResult] = await conn.execute(
         `INSERT INTO Visit_Dental_Services (
           vst_id_FK, dse_id_FK, vds_quantity, vds_discount, vds_total_amount
         ) VALUES (?, ?, ?, 0, ?)`,
         [visitIdToUse, service.serviceId, service.quantity, service.total]
       );
+      console.log('Услуга добавлена, ID:', serviceResult.insertId);
     }
 
     await conn.commit();
+    console.log('Транзакция завершена успешно');
     
     res.status(200).json({ 
       status: "success", 
@@ -748,12 +769,14 @@ app.post("/save-visit", async (req, res) => {
     await conn.rollback();
     console.error("Ошибка при сохранении визита:", err);
     console.error("Детали ошибки:", {
-      patientId, date, doctorId, visitId, servicesCount: services?.length
+      patientId, date, doctorId, visitId, 
+      visitIdToUse, servicesCount: services?.length
     });
     res.status(500).json({ 
       error: "Ошибка сервера при сохранении визита", 
       detail: err.message,
-      sql: err.sql
+      sql: err.sql,
+      code: err.code
     });
   } finally {
     await conn.end();
