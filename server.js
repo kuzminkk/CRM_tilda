@@ -606,7 +606,59 @@ app.get("/get-visit-info", async (req, res) => {
 
 
 
+// ===============================
+// 📅 GET /get-schedule — получение расписания на конкретную дату
+// ===============================
+app.get("/get-schedule", async (req, res) => {
+  const { date, api_key } = req.query;
 
+  if (process.env.API_KEY && api_key !== process.env.API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  if (!date) {
+    return res.status(400).json({ error: "Не указана дата" });
+  }
+
+  const conn = await mysql.createConnection(dbConfig);
+
+  try {
+    const [rows] = await conn.execute(
+      `
+      SELECT 
+        v.vst_id,
+        v.ptt_id_FK,
+        v.ele_id_FK,
+        v.vst_date,
+        v.vst_timestrart,
+        v.vst_timeend,
+        v.vte_id_FK,
+        v.vss_id_FK,
+        CONCAT(p.ptt_sername, ' ', p.ptt_name, ' ', IFNULL(p.ptt_patronymic, '')) AS patient_name,
+        p.ptt_sername,
+        p.ptt_name,
+        p.ptt_patronymic,
+        p.ptt_tel,
+        vs.vss_type,
+        vt.vte_type
+      FROM Visits v
+      JOIN Patients p ON v.ptt_id_FK = p.ptt_id
+      JOIN Visit_Statuses vs ON v.vss_id_FK = vs.vss_id
+      JOIN Visit_Types vt ON v.vte_id_FK = vt.vte_id
+      WHERE v.vst_date = ?
+        AND vs.vss_type IN ('Клиент пришел', 'Запись подтверждена')
+      ORDER BY v.vst_timestrart
+      `,
+      [date]
+    );
+
+    await conn.end();
+    res.json(rows);
+  } catch (err) {
+    console.error("Ошибка в /get-schedule:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
 
 
 // ===============================
