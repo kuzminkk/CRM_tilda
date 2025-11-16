@@ -1060,7 +1060,75 @@ function getStatusText(statusType) {
 }
 
 
+// ===============================
+// 📋 GET /get-receipt-for-order — детали поступления для создания заказа
+// ===============================
+app.get("/get-receipt-for-order", async (req, res) => {
+  try {
+    const { receipt_id, api_key } = req.query;
 
+    if (process.env.API_KEY && api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    if (!receipt_id) {
+      return res.status(400).json({ error: "Не указан ID поступления" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        s.Sup_id as receipt_id,
+        s.Sup_date as receipt_date,
+        sup.Short_name AS supplier_name,
+        sup.Full_name AS supplier_full_name,
+        sup.Supplier_id as supplier_id,
+        u.Name AS product_name,
+        u.Unit_id as product_id,
+        s.Unit_amount AS quantity,
+        u.Specs AS specifications,
+        u.Status AS stock_status
+      FROM ERP_Supplies s
+      JOIN ERP_Supplier sup ON s.Supplier_id = sup.Supplier_id
+      JOIN ERP_Unit_In_Storage u ON s.Unit_id = u.Unit_id
+      WHERE s.Sup_id = ?
+      ORDER BY u.Name
+    `, [receipt_id]);
+
+    await conn.end();
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Поступление не найдено" });
+    }
+
+    // Форматируем данные для создания заказа
+    const receiptForOrder = {
+      receipt_id: rows[0].receipt_id,
+      receipt_date: new Date(rows[0].receipt_date).toLocaleDateString('ru-RU', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+      }),
+      receipt_number: `Поступление №${String(rows[0].receipt_id).padStart(3, '0')}`,
+      supplier: rows[0].supplier_name,
+      supplier_full: rows[0].supplier_full_name,
+      supplier_id: rows[0].supplier_id,
+      items: rows.map(row => ({
+        product_id: row.product_id,
+        name: row.product_name,
+        quantity: row.quantity,
+        specs: row.specifications,
+        status: row.stock_status
+      }))
+    };
+
+    res.json(receiptForOrder);
+  } catch (err) {
+    console.error("Ошибка в /get-receipt-for-order:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
 
 
 // ===============================
