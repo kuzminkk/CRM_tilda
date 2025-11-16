@@ -921,6 +921,143 @@ app.post("/cleanup-duplicates", async (req, res) => {
 });
 
 
+
+
+
+// ===============================
+// 📦 GET /get-warehouse-receipts — получение поступлений на склад
+// ===============================
+app.get("/get-warehouse-receipts", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        s.Sup_id AS receipt_id,
+        s.Sup_date AS receipt_date,
+        sup.Short_name AS supplier_name,
+        sup.Full_name AS supplier_full_name,
+        COUNT(DISTINCT s.Unit_id) AS positions_count,
+        SUM(s.Unit_amount) AS total_quantity,
+        CASE 
+          WHEN s.Sup_date > CURDATE() THEN 'coming'
+          WHEN s.Sup_date = CURDATE() THEN 'new' 
+          ELSE 'available'
+        END AS status_type
+      FROM ERP_Supplies s
+      JOIN ERP_Supplier sup ON s.Supplier_id = sup.Supplier_id
+      GROUP BY s.Sup_id, s.Sup_date, sup.Short_name, sup.Full_name
+      ORDER BY s.Sup_date DESC
+      LIMIT 10
+    `);
+
+    await conn.end();
+    
+    // Преобразуем данные для фронтенда
+    const formattedData = rows.map(row => ({
+      id: row.receipt_id,
+      number: `Поступление №${String(row.receipt_id).padStart(3, '0')}`,
+      date: new Date(row.receipt_date).toLocaleDateString('ru-RU', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+      }),
+      supplier: row.supplier_name,
+      positions: row.positions_count,
+      status: row.status_type,
+      status_text: getStatusText(row.status_type)
+    }));
+
+    res.json(formattedData);
+  } catch (err) {
+    console.error("Ошибка в /get-warehouse-receipts:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// ===============================
+// 📋 GET /get-receipt-details — детали конкретного поступления
+// ===============================
+app.get("/get-receipt-details", async (req, res) => {
+  try {
+    const { receipt_id, api_key } = req.query;
+
+    if (process.env.API_KEY && api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    if (!receipt_id) {
+      return res.status(400).json({ error: "Не указан ID поступления" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        s.Sup_id,
+        s.Sup_date,
+        sup.Short_name AS supplier_name,
+        sup.Full_name AS supplier_full_name,
+        u.Name AS product_name,
+        s.Unit_amount AS quantity,
+        u.Specs AS specifications,
+        u.Status AS stock_status
+      FROM ERP_Supplies s
+      JOIN ERP_Supplier sup ON s.Supplier_id = sup.Supplier_id
+      JOIN ERP_Unit_In_Storage u ON s.Unit_id = u.Unit_id
+      WHERE s.Sup_id = ?
+      ORDER BY u.Name
+    `, [receipt_id]);
+
+    await conn.end();
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Поступление не найдено" });
+    }
+
+    // Форматируем данные
+    const receiptDetails = {
+      receipt_id: rows[0].Sup_id,
+      receipt_date: new Date(rows[0].Sup_date).toLocaleDateString('ru-RU', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+      }),
+      supplier: rows[0].supplier_name,
+      supplier_full: rows[0].supplier_full_name,
+      items: rows.map(row => ({
+        name: row.product_name,
+        quantity: row.quantity,
+        specs: row.specifications,
+        status: row.stock_status
+      }))
+    };
+
+    res.json(receiptDetails);
+  } catch (err) {
+    console.error("Ошибка в /get-receipt-details:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// Вспомогательная функция для получения текста статуса
+function getStatusText(statusType) {
+  const statusMap = {
+    'coming': 'Ожидается',
+    'new': 'Оформлено', 
+    'available': 'Завершено'
+  };
+  return statusMap[statusType] || 'Оформлено';
+}
+
+
+
+
+
 // ===============================
 // 🚀 Запуск сервера
 // ===============================
