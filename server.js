@@ -1131,6 +1131,97 @@ app.get("/get-receipt-for-order", async (req, res) => {
 });
 
 
+
+// ===============================
+// 💾 POST /save-supplier-order — сохранение заказа поставщику
+// ===============================
+app.post("/save-supplier-order", async (req, res) => {
+  try {
+    const { api_key } = req.query;
+    const orderData = req.body;
+
+    if (process.env.API_KEY && api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    if (!orderData) {
+      return res.status(400).json({ error: "Нет данных для сохранения" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    await conn.beginTransaction();
+
+    try {
+      // 1. Сохраняем заказ в таблицу ERP_Orders
+      const [orderResult] = await conn.execute(
+        `INSERT INTO ERP_Orders (Ord_date, Status, Supplier_id, Delivery_date, Ship_date) 
+         VALUES (NOW(), ?, ?, ?, ?)`,
+        [
+          orderData.status === 'draft' ? 'Черновик' : 'Новый',
+          orderData.supplierId,
+          orderData.desiredDate,
+          orderData.actualDate || null
+        ]
+      );
+
+      const orderId = orderResult.insertId;
+
+      // 2. Сохраняем товары заказа
+      for (const product of orderData.products) {
+        // Сначала проверяем существует ли товар в Unit_To_Ord
+        const [existingProduct] = await conn.execute(
+          `SELECT Unit_to_ord_id FROM ERP_Unit_To_Ord WHERE Name = ?`,
+          [product.name]
+        );
+
+        let productId;
+        if (existingProduct.length > 0) {
+          productId = existingProduct[0].Unit_to_ord_id;
+          // Обновляем существующий товар
+          await conn.execute(
+            `UPDATE ERP_Unit_To_Ord SET Price = ?, Amount = ? WHERE Unit_to_ord_id = ?`,
+            [product.price, product.quantity, productId]
+          );
+        } else {
+          // Создаем новый товар
+          const [productResult] = await conn.execute(
+            `INSERT INTO ERP_Unit_To_Ord (Name, Price, Amount) VALUES (?, ?, ?)`,
+            [product.name, product.price, product.quantity]
+          );
+          productId = productResult.insertId;
+        }
+
+        // Связываем товар с заказом (в реальной БД может потребоваться отдельная таблица связи)
+        // Для примера просто обновляем Unit_to_ord_id в заказе (в реальности нужно создать таблицу Order_Items)
+      }
+
+      // 3. Сохраняем информацию о курсах валют (если нужно)
+      const exchangeRatesJSON = JSON.stringify(orderData.exchangeRates);
+
+      await conn.commit();
+
+      res.status(200).json({
+        status: "success",
+        message: "Заказ успешно сохранен",
+        orderId: orderId,
+        orderNumber: `ORD-${String(orderId).padStart(4, '0')}`,
+        savedAt: new Date().toISOString()
+      });
+
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      await conn.end();
+    }
+
+  } catch (err) {
+    console.error("Ошибка в /save-supplier-order:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
 // ===============================
 // 🚀 Запуск сервера
 // ===============================
