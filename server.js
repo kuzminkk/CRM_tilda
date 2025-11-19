@@ -1225,7 +1225,7 @@ app.post("/save-supplier-order", async (req, res) => {
 
 
 // ===============================
-// 💰 GET /get-revenue-last-3-months — получение выручки за последние 3 месяца
+// 💰 GET /get-revenue-last-3-months — получение выручки за последние 3 месяца (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 // ===============================
 app.get("/get-revenue-last-3-months", async (req, res) => {
   try {
@@ -1237,7 +1237,8 @@ app.get("/get-revenue-last-3-months", async (req, res) => {
 
     const [rows] = await conn.execute(`
       SELECT 
-        DATE_FORMAT(v.vst_date, '%M %Y') AS month_name,
+        YEAR(v.vst_date) as year,
+        MONTH(v.vst_date) as month,
         SUM(COALESCE(v.vst_final_sumservice, 0)) AS revenue
       FROM Visits v
       WHERE v.vst_date >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
@@ -1250,7 +1251,16 @@ app.get("/get-revenue-last-3-months", async (req, res) => {
 
     await conn.end();
 
-    // Если данных нет, возвращаем демо-данные
+    // Функция для получения русского названия месяца
+    const getRussianMonthName = (month) => {
+      const months = [
+        'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+        'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+      ];
+      return months[month - 1];
+    };
+
+    // Если данных нет, возвращаем демо-данные с русскими названиями
     if (rows.length === 0) {
       const currentDate = new Date();
       const months = [];
@@ -1258,9 +1268,12 @@ app.get("/get-revenue-last-3-months", async (req, res) => {
       for (let i = 0; i < 3; i++) {
         const date = new Date(currentDate);
         date.setMonth(currentDate.getMonth() - i);
-        const monthName = date.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+        const month = date.getMonth() + 1;
+        const year = date.getFullYear();
+        const monthName = getRussianMonthName(month);
+        
         months.push({
-          name: monthName.charAt(0).toUpperCase() + monthName.slice(1),
+          name: `${monthName} ${year}`,
           revenue: 0
         });
       }
@@ -1268,10 +1281,10 @@ app.get("/get-revenue-last-3-months", async (req, res) => {
       return res.json({ months });
     }
 
-    // Форматируем данные для фронтенда
+    // Форматируем данные для фронтенда с русскими названиями месяцев
     const formattedData = {
       months: rows.map(row => ({
-        name: row.month_name,
+        name: `${getRussianMonthName(row.month)} ${row.year}`,
         revenue: parseFloat(row.revenue) || 0
       }))
     };
@@ -1282,7 +1295,6 @@ app.get("/get-revenue-last-3-months", async (req, res) => {
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
-
 
 
 // ===============================
