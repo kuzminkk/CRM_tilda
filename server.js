@@ -1222,6 +1222,69 @@ app.post("/save-supplier-order", async (req, res) => {
   }
 });
 
+
+
+// ===============================
+// 💰 GET /get-revenue-last-3-months — получение выручки за последние 3 месяца
+// ===============================
+app.get("/get-revenue-last-3-months", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        DATE_FORMAT(v.vst_date, '%M %Y') AS month_name,
+        SUM(COALESCE(v.vst_final_sumservice, 0)) AS revenue
+      FROM Visits v
+      WHERE v.vst_date >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+        AND v.vst_final_sumservice IS NOT NULL
+        AND v.vst_final_sumservice > 0
+      GROUP BY YEAR(v.vst_date), MONTH(v.vst_date)
+      ORDER BY YEAR(v.vst_date) DESC, MONTH(v.vst_date) DESC
+      LIMIT 3
+    `);
+
+    await conn.end();
+
+    // Если данных нет, возвращаем демо-данные
+    if (rows.length === 0) {
+      const currentDate = new Date();
+      const months = [];
+      
+      for (let i = 0; i < 3; i++) {
+        const date = new Date(currentDate);
+        date.setMonth(currentDate.getMonth() - i);
+        const monthName = date.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+        months.push({
+          name: monthName.charAt(0).toUpperCase() + monthName.slice(1),
+          revenue: 0
+        });
+      }
+      
+      return res.json({ months });
+    }
+
+    // Форматируем данные для фронтенда
+    const formattedData = {
+      months: rows.map(row => ({
+        name: row.month_name,
+        revenue: parseFloat(row.revenue) || 0
+      }))
+    };
+
+    res.json(formattedData);
+  } catch (err) {
+    console.error("Ошибка в /get-revenue-last-3-months:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+
+
 // ===============================
 // 🚀 Запуск сервера
 // ===============================
