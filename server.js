@@ -1298,6 +1298,53 @@ app.get("/get-revenue-last-3-months", async (req, res) => {
 
 
 // ===============================
+// 📊 GET /get-visits-by-employees — получение количества приемов по сотрудникам
+// ===============================
+app.get("/get-visits-by-employees", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        CONCAT(e.ele_sername, ' ', e.ele_name, ' ', IFNULL(e.ele_patronymic, '')) AS employee_name,
+        p.psn_name AS position,
+        COUNT(v.vst_id) AS visits_count
+      FROM Employees e
+      JOIN Positions p ON e.psn_id_FK = p.psn_id
+      LEFT JOIN Visits v ON e.ele_id = v.ele_id_FK
+      WHERE p.psn_name IN ('Терапевт', 'Врач-ортодонт', 'Стоматолог-хирург', 'Стоматолог-ортопед')
+        AND v.vst_date >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+      GROUP BY e.ele_id, e.ele_sername, e.ele_name, e.ele_patronymic, p.psn_name
+      ORDER BY visits_count DESC
+    `);
+
+    await conn.end();
+
+    // Форматируем данные для фронтенда
+    const formattedData = {
+      employees: rows.map(row => ({
+        name: row.employee_name,
+        position: row.position,
+        visits: parseInt(row.visits_count) || 0
+      }))
+    };
+
+    res.json(formattedData);
+  } catch (err) {
+    console.error("Ошибка в /get-visits-by-employees:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+
+
+
+
+// ===============================
 // 🚀 Запуск сервера
 // ===============================
 const PORT = process.env.PORT || 3000;
