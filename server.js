@@ -1341,7 +1341,34 @@ app.get("/get-visits-by-employees", async (req, res) => {
 });
 
 
+// ===============================
+// 📦 GET /get-warehouse-products — получение списка товаров для номенклатуры
+// ===============================
+app.get("/get-warehouse-products", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
 
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        Unit_id as id,
+        Name as name,
+        Specs as specifications
+      FROM ERP_Unit_In_Storage
+      ORDER BY Name
+    `);
+
+    await conn.end();
+    
+    res.json(rows);
+  } catch (err) {
+    console.error("Ошибка в /get-warehouse-products:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
 
 
 // ===============================
