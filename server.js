@@ -1365,7 +1365,13 @@ app.get("/get-warehouse-products", async (req, res) => {
 
     await conn.end();
     
-    res.json(rows);
+    // Преобразуем price в число
+    const productsWithNumericPrice = rows.map(product => ({
+      ...product,
+      price: parseFloat(product.price) || 0
+    }));
+    
+    res.json(productsWithNumericPrice);
   } catch (err) {
     console.error("Ошибка в /get-warehouse-products:", err);
     res.status(500).json({ error: "Server error", detail: err.message });
