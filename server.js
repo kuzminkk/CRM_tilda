@@ -1354,11 +1354,13 @@ app.get("/get-warehouse-products", async (req, res) => {
 
     const [rows] = await conn.execute(`
       SELECT 
-        Unit_id as id,
-        Name as name,
-        Specs as specifications
-      FROM ERP_Unit_In_Storage
-      ORDER BY Name
+        u.Unit_id as id,
+        u.Name as name,
+        u.Specs as specifications,
+        COALESCE(uto.Price, 0) as price
+      FROM ERP_Unit_In_Storage u
+      LEFT JOIN ERP_Unit_To_Ord uto ON u.Name = uto.Name
+      ORDER BY u.Name
     `);
 
     await conn.end();
@@ -1369,7 +1371,6 @@ app.get("/get-warehouse-products", async (req, res) => {
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
-
 
 // ===============================
 // 🚀 Запуск сервера
