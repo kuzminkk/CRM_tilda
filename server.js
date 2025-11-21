@@ -1133,14 +1133,14 @@ app.get("/get-receipt-for-order", async (req, res) => {
 
 
 // ===============================
-// 💾 POST /save-supplier-order — сохранение заказа поставщику (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+// 💾 POST /save-supplier-order-fixed — исправленное сохранение заказа
 // ===============================
-app.post("/save-supplier-order", async (req, res) => {
+app.post("/save-supplier-order-fixed", async (req, res) => {
   try {
     const { api_key } = req.query;
     const orderData = req.body;
 
-    console.log('=== СОХРАНЕНИЕ ЗАКАЗА ПОСТАВЩИКУ ===');
+    console.log('=== СОХРАНЕНИЕ ЗАКАЗА (ИСПРАВЛЕННАЯ ВЕРСИЯ) ===');
     console.log('Данные заказа:', orderData);
 
     if (process.env.API_KEY && api_key !== process.env.API_KEY) {
@@ -1170,24 +1170,8 @@ app.post("/save-supplier-order", async (req, res) => {
           orderStatus = 'Новый';
       }
 
-      // 2. Сохраняем заказ в таблицу ERP_Orders
-      const [orderResult] = await conn.execute(
-        `INSERT INTO ERP_Orders (Ord_date, Status, Supplier_id, Delivery_date, Ship_date) 
-         VALUES (NOW(), ?, ?, ?, ?)`,
-        [
-          orderStatus,
-          orderData.supplierId,
-          orderData.desiredDate || null,
-          orderData.actualDate || null
-        ]
-      );
-
-      const orderId = orderResult.insertId;
-      console.log('✅ Заказ сохранен с ID:', orderId);
-
-      // 3. Сохраняем товары заказа
-      let savedProducts = 0;
-      
+      // 2. Сначала создаем товары в ERP_Unit_To_Ord
+      const productIds = [];
       for (const product of orderData.products) {
         console.log(`📦 Обработка товара: ${product.name}`);
         
@@ -1206,7 +1190,7 @@ app.post("/save-supplier-order", async (req, res) => {
             `UPDATE ERP_Unit_To_Ord SET Price = ?, Amount = ? WHERE Unit_to_ord_id = ?`,
             [product.price, product.quantity, productId]
           );
-          console.log(`✅ Товар обновлен: ${product.name}`);
+          console.log(`✅ Товар обновлен: ${product.name} (ID: ${productId})`);
         } else {
           // Создаем новый товар
           const [productResult] = await conn.execute(
@@ -1216,17 +1200,28 @@ app.post("/save-supplier-order", async (req, res) => {
           productId = productResult.insertId;
           console.log(`✅ Товар создан: ${product.name} с ID: ${productId}`);
         }
-
-        // Обновляем заказ ссылкой на товар
-        await conn.execute(
-          `UPDATE ERP_Orders SET Unit_to_ord_id = ? WHERE Ord_id = ?`,
-          [productId, orderId]
-        );
         
-        savedProducts++;
+        productIds.push(productId);
       }
 
-      console.log(`✅ Сохранено товаров: ${savedProducts}`);
+      // 3. Используем первый товар для связи с заказом (или NULL если нет товаров)
+      const firstProductId = productIds.length > 0 ? productIds[0] : null;
+
+      // 4. Сохраняем заказ в таблицу ERP_Orders
+      const [orderResult] = await conn.execute(
+        `INSERT INTO ERP_Orders (Ord_date, Status, Supplier_id, Delivery_date, Ship_date, Unit_to_ord_id) 
+         VALUES (NOW(), ?, ?, ?, ?, ?)`,
+        [
+          orderStatus,
+          orderData.supplierId,
+          orderData.desiredDate || null,
+          orderData.actualDate || null,
+          firstProductId
+        ]
+      );
+
+      const orderId = orderResult.insertId;
+      console.log('✅ Заказ сохранен с ID:', orderId);
 
       await conn.commit();
 
@@ -1235,7 +1230,7 @@ app.post("/save-supplier-order", async (req, res) => {
         message: "Заказ успешно сохранен",
         orderId: orderId,
         orderNumber: `ORD-${String(orderId).padStart(4, '0')}`,
-        savedProducts: savedProducts,
+        savedProducts: productIds.length,
         totalAmount: orderData.totalAmount,
         savedAt: new Date().toISOString()
       });
@@ -1249,7 +1244,7 @@ app.post("/save-supplier-order", async (req, res) => {
     }
 
   } catch (err) {
-    console.error("❌ Ошибка в /save-supplier-order:", err);
+    console.error("❌ Ошибка в /save-supplier-order-fixed:", err);
     res.status(500).json({ 
       error: "Server error", 
       detail: err.message,
