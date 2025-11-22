@@ -1136,6 +1136,8 @@ app.get("/get-receipt-for-order", async (req, res) => {
 // 💾 POST /save-supplier-order-fixed — исправленное сохранение заказа
 // ===============================
 app.post('/save-supplier-order-fixed', async (req, res) => {
+  let conn;
+  
   try {
     const { receipt_id, status, supplierId, desiredDate, actualDate, products, orderNumber, totalAmount } = req.body;
     
@@ -1145,6 +1147,9 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
     
+    conn = await mysql.createConnection(dbConfig);
+    await conn.beginTransaction();
+    
     let orderId = receipt_id;
     
     if (receipt_id) {
@@ -1152,33 +1157,35 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
       console.log('🔄 Updating existing order:', receipt_id);
       
       // Обновляем основную информацию заказа
-      await connection.execute(
+      await conn.execute(
         `UPDATE ERP_Orders 
-         SET Status = ?, Supplier_id = ?, Delivery_date = ?, Ship_date = ?
+         SET Status = ?, Supplier_id = ?, Delivery_date = ?, Ship_date = ?, Unit_to_ord_id = ?
          WHERE Ord_id = ?`,
-        [mapStatusToDB(status), supplierId, desiredDate, actualDate, receipt_id]
+        [mapStatusToDB(status), supplierId, desiredDate, actualDate, products[0].id, receipt_id]
       );
       
-      // Здесь можно добавить обновление товаров заказа
-      // (в зависимости от вашей бизнес-логики)
+      console.log('✅ Order updated successfully');
       
     } else {
       // СОЗДАНИЕ нового заказа
       console.log('🆕 Creating new order');
       
       // Получаем следующий ID
-      const [maxIdRows] = await connection.execute('SELECT MAX(Ord_id) as maxId FROM ERP_Orders');
+      const [maxIdRows] = await conn.execute('SELECT MAX(Ord_id) as maxId FROM ERP_Orders');
       const nextId = (maxIdRows[0].maxId || 0) + 1;
       
       // Создаем заказ
-      await connection.execute(
+      await conn.execute(
         `INSERT INTO ERP_Orders (Ord_id, Ord_date, Status, Supplier_id, Delivery_date, Ship_date, Unit_to_ord_id)
          VALUES (?, NOW(), ?, ?, ?, ?, ?)`,
         [nextId, mapStatusToDB(status), supplierId, desiredDate, actualDate, products[0].id]
       );
       
       orderId = nextId;
+      console.log('✅ New order created with ID:', nextId);
     }
+    
+    await conn.commit();
     
     res.json({
       success: true,
@@ -1188,27 +1195,18 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
     });
     
   } catch (error) {
+    if (conn) await conn.rollback();
     console.error('Error saving order:', error);
     res.status(500).json({ 
       error: 'Internal server error',
       details: error.message 
     });
+  } finally {
+    if (conn) await conn.end();
   }
 });
 
-// Маппинг статусов для БД
-function mapStatusToDB(status) {
-  const statusMap = {
-    'new': 'В обработке',
-    'in-progress': 'В обработке',
-    'confirmed': 'Подтвержден',
-    'shipped': 'Отгружено',
-    'delivered': 'Доставлено',
-    'cancelled': 'Отменено',
-    'draft': 'Черновик'
-  };
-  return statusMap[status] || 'В обработке';
-}
+
 
 
 
@@ -1369,15 +1367,23 @@ app.get("/get-warehouse-products", async (req, res) => {
 
 // Эндпоинт для получения деталей заказа
 app.get('/get-order-details', async (req, res) => {
+  let conn;
+  
   try {
-    const { receipt_id } = req.query;
+    const { receipt_id, api_key } = req.query;
+    
+    if (process.env.API_KEY && api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
     
     if (!receipt_id) {
       return res.status(400).json({ error: 'receipt_id is required' });
     }
     
+    conn = await mysql.createConnection(dbConfig);
+    
     // Получаем основную информацию о заказе
-    const [orderRows] = await connection.execute(
+    const [orderRows] = await conn.execute(
       `SELECT o.Ord_id, o.Ord_date, o.Status, o.Supplier_id, o.Delivery_date, o.Ship_date,
               s.Short_name as supplier_name
        FROM ERP_Orders o
@@ -1393,7 +1399,7 @@ app.get('/get-order-details', async (req, res) => {
     const order = orderRows[0];
     
     // Получаем товары заказа
-    const [productRows] = await connection.execute(
+    const [productRows] = await conn.execute(
       `SELECT u.Unit_to_ord_id as product_id, u.Name as product_name, 
               u.Price as price, u.Amount as quantity, 'шт' as unit
        FROM ERP_Unit_To_Ord u
@@ -1419,18 +1425,12 @@ app.get('/get-order-details', async (req, res) => {
   } catch (error) {
     console.error('Error fetching order details:', error);
     res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    if (conn) await conn.end();
   }
 });
 
-// Маппинг статусов
-function mapOrderStatus(dbStatus) {
-  const statusMap = {
-    'В обработке': 'in-progress',
-    'Отгружено': 'shipped',
-    'Доставлено': 'delivered'
-  };
-  return statusMap[dbStatus] || 'new';
-}
+
 
 
 
