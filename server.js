@@ -1438,7 +1438,6 @@ function mapStatusToDB(status) {
   const statusMap = {
     'new': 'В обработке',
     'in-progress': 'В обработке',
-    'confirmed': 'Подтвержден',
     'shipped': 'Отгружено',
     'delivered': 'Доставлено',
     'cancelled': 'Отменено',
