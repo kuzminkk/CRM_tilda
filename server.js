@@ -1268,7 +1268,7 @@ app.get("/get-receipt-for-order", async (req, res) => {
 
 
 // ===============================
-// 💾 POST /save-supplier-order-fixed — исправленное сохранение заказа с поддержкой нескольких товаров
+// 💾 ОБНОВЛЕННЫЙ ЭНДПОИНТ СОХРАНЕНИЯ ЗАКАЗА С ОБНОВЛЕНИЕМ СКЛАДА
 // ===============================
 app.post('/save-supplier-order-fixed', async (req, res) => {
   let conn;
@@ -1276,8 +1276,11 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
   try {
     const { receipt_id, status, supplierId, desiredDate, actualDate, products, orderNumber, totalAmount } = req.body;
     
-    console.log('Received order data:', req.body);
-    console.log('Products count:', products.length);
+    console.log('📦 Получены данные заказа для сохранения:', { 
+      receipt_id, 
+      status, 
+      productsCount: products?.length 
+    });
     
     if (!supplierId || !products || products.length === 0) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -1285,6 +1288,13 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
     
     conn = await mysql.createConnection(dbConfig);
     await conn.beginTransaction();
+    
+    // Получаем предыдущий статус заказа (если заказ существует)
+    let previousStatus = null;
+    if (receipt_id) {
+      previousStatus = await getPreviousOrderStatus(receipt_id);
+      console.log(`📋 Предыдущий статус заказа: ${previousStatus}, новый статус: ${status}`);
+    }
     
     let orderId = receipt_id;
     
@@ -1300,7 +1310,7 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
         [mapStatusToDB(status), supplierId, desiredDate, actualDate, receipt_id]
       );
       
-      // Удаляем старые товары заказа (если таблица существует)
+      // Удаляем старые товары заказа
       try {
         await conn.execute(`DELETE FROM ERP_Order_Items WHERE Ord_id = ?`, [receipt_id]);
         console.log('✅ Old order items removed');
@@ -1316,7 +1326,7 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
       const [maxIdRows] = await conn.execute('SELECT MAX(Ord_id) as maxId FROM ERP_Orders');
       const nextId = (maxIdRows[0].maxId || 0) + 1;
       
-      // Создаем заказ (используем первый товар для обратной совместимости)
+      // Создаем заказ
       await conn.execute(
         `INSERT INTO ERP_Orders (Ord_id, Ord_date, Status, Supplier_id, Delivery_date, Ship_date, Unit_to_ord_id)
          VALUES (?, NOW(), ?, ?, ?, ?, ?)`,
@@ -1327,7 +1337,7 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
       console.log('✅ New order created with ID:', nextId);
     }
     
-    // Добавляем все товары в заказ (если таблица существует)
+    // Добавляем все товары в заказ
     try {
       for (const product of products) {
         console.log(`➕ Adding product: ${product.name}, quantity: ${product.quantity}, price: ${product.price}`);
@@ -1348,6 +1358,26 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
       );
     }
     
+    // 🔄 ПРОВЕРЯЕМ НУЖНО ЛИ ОБНОВЛЯТЬ СКЛАД
+    const currentStatus = mapStatusToDB(status);
+    const isStatusChangedToDelivered = 
+      (currentStatus === 'Доставлено' && previousStatus !== 'Доставлено');
+
+    let stockUpdateResult = null;
+    if (isStatusChangedToDelivered) {
+      console.log('🔄 Статус изменен на "Доставлен" - обновляем склад');
+      
+      // Обновляем склад
+      stockUpdateResult = await updateWarehouseStock({
+        ...req.body,
+        receipt_id: orderId
+      });
+      
+      console.log('📊 Результат обновления склада:', stockUpdateResult);
+    } else {
+      console.log('ℹ️ Статус не изменился на "Доставлен" - склад не обновляется');
+    }
+    
     await conn.commit();
     
     console.log('✅ Order saved successfully');
@@ -1357,12 +1387,14 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
       orderId: orderId,
       orderNumber: orderNumber || `ORD-${String(orderId).padStart(4, '0')}`,
       productsCount: products.length,
+      stockUpdated: isStatusChangedToDelivered,
+      stockUpdateDetails: stockUpdateResult,
       message: receipt_id ? 'Order updated successfully' : 'Order created successfully'
     });
     
   } catch (error) {
     if (conn) await conn.rollback();
-    console.error('Error saving order:', error);
+    console.error('❌ Error saving order:', error);
     res.status(500).json({ 
       error: 'Internal server error',
       details: error.message 
@@ -1785,8 +1817,205 @@ app.get("/get-visit-products", async (req, res) => {
 });
 
 
+// ===============================
+// 📦 ФУНКЦИИ ДЛЯ АВТОМАТИЧЕСКОГО ОБНОВЛЕНИЯ СКЛАДА
+// ===============================
 
+// Функция для обновления количества товаров на складе при доставке заказа
+async function updateWarehouseStock(orderData) {
+  let conn;
+  
+  try {
+    console.log('🔄 Обновление склада для заказа:', orderData.receipt_id);
+    
+    conn = await mysql.createConnection(dbConfig);
+    await conn.beginTransaction();
 
+    // Проверяем, изменился ли статус на "Доставлен"
+    if (orderData.status === 'delivered' || orderData.status === 'Доставлено') {
+      console.log('✅ Статус "Доставлен" - обновляем склад');
+      
+      let updatedProducts = [];
+      
+      // Для каждого товара в заказе обновляем количество на складе
+      for (const product of orderData.products) {
+        console.log(`📦 Обрабатываем товар: ${product.name} (ID: ${product.id}), количество: ${product.quantity}`);
+        
+        // Получаем текущее количество товара на складе
+        const [currentStock] = await conn.execute(
+          'SELECT Unit_id, Name, Specs, Amount, Status FROM ERP_Unit_In_Storage WHERE Unit_id = ?',
+          [product.id]
+        );
+        
+        if (currentStock.length > 0) {
+          const currentAmount = currentStock[0].Amount;
+          const newAmount = currentAmount + product.quantity;
+          
+          // Обновляем количество на складе
+          await conn.execute(
+            'UPDATE ERP_Unit_In_Storage SET Amount = ?, Status = ? WHERE Unit_id = ?',
+            [newAmount, 'На складе', product.id]
+          );
+          
+          console.log(`✅ Товар ID ${product.id}: ${currentAmount} + ${product.quantity} = ${newAmount}`);
+          updatedProducts.push({
+            id: product.id,
+            name: product.name,
+            oldAmount: currentAmount,
+            newAmount: newAmount,
+            added: product.quantity
+          });
+        } else {
+          // Если товара нет на складе, создаем новую запись
+          await conn.execute(
+            'INSERT INTO ERP_Unit_In_Storage (Unit_id, Name, Specs, Amount, Status) VALUES (?, ?, ?, ?, ?)',
+            [product.id, product.name, product.specifications || '', product.quantity, 'На складе']
+          );
+          
+          console.log(`✅ Создана новая позиция на складе: ${product.name}`);
+          updatedProducts.push({
+            id: product.id,
+            name: product.name,
+            oldAmount: 0,
+            newAmount: product.quantity,
+            added: product.quantity
+          });
+        }
+      }
+      
+      await conn.commit();
+      console.log('✅ Склад успешно обновлен');
+      
+      return {
+        success: true,
+        updatedProducts: updatedProducts
+      };
+    }
+    
+    console.log('ℹ️ Статус не "Доставлен" - склад не обновляется');
+    return {
+      success: false,
+      reason: 'Статус не "Доставлен"'
+    };
+    
+  } catch (error) {
+    if (conn) await conn.rollback();
+    console.error('❌ Ошибка обновления склада:', error);
+    throw error;
+  } finally {
+    if (conn) await conn.end();
+  }
+}
+
+// Функция для получения предыдущего статуса заказа
+async function getPreviousOrderStatus(orderId) {
+  let conn;
+  
+  try {
+    conn = await mysql.createConnection(dbConfig);
+    
+    const [existingOrder] = await conn.execute(
+      'SELECT Status FROM ERP_Orders WHERE Ord_id = ?',
+      [orderId]
+    );
+    
+    if (existingOrder.length > 0) {
+      return existingOrder[0].Status;
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('❌ Ошибка получения предыдущего статуса:', error);
+    return null;
+  } finally {
+    if (conn) await conn.end();
+  }
+}
+
+// ===============================
+// 🔧 ДОПОЛНИТЕЛЬНЫЕ ЭНДПОИНТЫ ДЛЯ ТЕСТИРОВАНИЯ
+// ===============================
+
+// Эндпоинт для принудительного обновления склада (для тестирования)
+app.post('/update-stock-manually', async (req, res) => {
+  try {
+    const { order_id, api_key } = req.body;
+    
+    if (process.env.API_KEY && api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    if (!order_id) {
+      return res.status(400).json({ error: "Не указан order_id" });
+    }
+
+    // Получаем данные заказа
+    const conn = await mysql.createConnection(dbConfig);
+    const [orders] = await conn.execute(`
+      SELECT o.Ord_id, o.Status, oi.Unit_to_ord_id, oi.Quantity, uto.Name 
+      FROM ERP_Orders o
+      JOIN ERP_Order_Items oi ON o.Ord_id = oi.Ord_id
+      JOIN ERP_Unit_To_Ord uto ON oi.Unit_to_ord_id = uto.Unit_to_ord_id
+      WHERE o.Ord_id = ?
+    `, [order_id]);
+    
+    await conn.end();
+
+    if (orders.length === 0) {
+      return res.status(404).json({ error: 'Заказ не найден' });
+    }
+    
+    const orderData = {
+      receipt_id: order_id,
+      status: orders[0].Status,
+      products: orders.map(item => ({
+        id: item.Unit_to_ord_id,
+        name: item.Name,
+        quantity: item.Quantity
+      }))
+    };
+    
+    const result = await updateWarehouseStock(orderData);
+    
+    res.json({
+      success: true,
+      message: 'Склад обновлен вручную',
+      details: result
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка ручного обновления склада:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Эндпоинт для проверки состояния склада
+app.get('/warehouse-status', async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+    const [stock] = await conn.execute(`
+      SELECT Unit_id, Name, Specs, Amount, Status 
+      FROM ERP_Unit_In_Storage 
+      ORDER BY Name
+    `);
+    
+    await conn.end();
+    
+    res.json({
+      success: true,
+      items: stock,
+      totalItems: stock.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка получения состояния склада:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 
 // ===============================
