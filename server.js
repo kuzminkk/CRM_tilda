@@ -1135,123 +1135,80 @@ app.get("/get-receipt-for-order", async (req, res) => {
 // ===============================
 // 💾 POST /save-supplier-order-fixed — исправленное сохранение заказа
 // ===============================
-app.post("/save-supplier-order-fixed", async (req, res) => {
+app.post('/save-supplier-order-fixed', async (req, res) => {
   try {
-    const { api_key } = req.query;
-    const orderData = req.body;
-
-    console.log('=== СОХРАНЕНИЕ ЗАКАЗА (ИСПРАВЛЕННАЯ ВЕРСИЯ) ===');
-    console.log('Данные заказа:', orderData);
-
-    if (process.env.API_KEY && api_key !== process.env.API_KEY) {
-      return res.status(401).json({ error: "Unauthorized" });
+    const { receipt_id, status, supplierId, desiredDate, actualDate, products, orderNumber, totalAmount } = req.body;
+    
+    console.log('Received order data:', req.body);
+    
+    if (!supplierId || !products || products.length === 0) {
+      return res.status(400).json({ error: 'Missing required fields' });
     }
-
-    if (!orderData) {
-      return res.status(400).json({ error: "Нет данных для сохранения" });
-    }
-
-    const conn = await mysql.createConnection(dbConfig);
-
-    await conn.beginTransaction();
-
-    try {
-      // 1. Определяем статус заказа
-      let orderStatus;
-      switch (orderData.status) {
-        case 'draft':
-          orderStatus = 'Черновик';
-          break;
-        case 'confirmed':
-          orderStatus = 'Подтвержден';
-          break;
-        case 'new':
-        default:
-          orderStatus = 'Новый';
-      }
-
-      // 2. Сначала создаем товары в ERP_Unit_To_Ord
-      const productIds = [];
-      for (const product of orderData.products) {
-        console.log(`📦 Обработка товара: ${product.name}`);
-        
-        // Проверяем существует ли товар в Unit_To_Ord
-        const [existingProduct] = await conn.execute(
-          `SELECT Unit_to_ord_id FROM ERP_Unit_To_Ord WHERE Name = ?`,
-          [product.name]
-        );
-
-        let productId;
-        
-        if (existingProduct.length > 0) {
-          // Обновляем существующий товар
-          productId = existingProduct[0].Unit_to_ord_id;
-          await conn.execute(
-            `UPDATE ERP_Unit_To_Ord SET Price = ?, Amount = ? WHERE Unit_to_ord_id = ?`,
-            [product.price, product.quantity, productId]
-          );
-          console.log(`✅ Товар обновлен: ${product.name} (ID: ${productId})`);
-        } else {
-          // Создаем новый товар
-          const [productResult] = await conn.execute(
-            `INSERT INTO ERP_Unit_To_Ord (Name, Price, Amount) VALUES (?, ?, ?)`,
-            [product.name, product.price, product.quantity]
-          );
-          productId = productResult.insertId;
-          console.log(`✅ Товар создан: ${product.name} с ID: ${productId}`);
-        }
-        
-        productIds.push(productId);
-      }
-
-      // 3. Используем первый товар для связи с заказом (или NULL если нет товаров)
-      const firstProductId = productIds.length > 0 ? productIds[0] : null;
-
-      // 4. Сохраняем заказ в таблицу ERP_Orders
-      const [orderResult] = await conn.execute(
-        `INSERT INTO ERP_Orders (Ord_date, Status, Supplier_id, Delivery_date, Ship_date, Unit_to_ord_id) 
-         VALUES (NOW(), ?, ?, ?, ?, ?)`,
-        [
-          orderStatus,
-          orderData.supplierId,
-          orderData.desiredDate || null,
-          orderData.actualDate || null,
-          firstProductId
-        ]
+    
+    let orderId = receipt_id;
+    
+    if (receipt_id) {
+      // ОБНОВЛЕНИЕ существующего заказа
+      console.log('🔄 Updating existing order:', receipt_id);
+      
+      // Обновляем основную информацию заказа
+      await connection.execute(
+        `UPDATE ERP_Orders 
+         SET Status = ?, Supplier_id = ?, Delivery_date = ?, Ship_date = ?
+         WHERE Ord_id = ?`,
+        [mapStatusToDB(status), supplierId, desiredDate, actualDate, receipt_id]
       );
-
-      const orderId = orderResult.insertId;
-      console.log('✅ Заказ сохранен с ID:', orderId);
-
-      await conn.commit();
-
-      res.status(200).json({
-        status: "success",
-        message: "Заказ успешно сохранен",
-        orderId: orderId,
-        orderNumber: `ORD-${String(orderId).padStart(4, '0')}`,
-        savedProducts: productIds.length,
-        totalAmount: orderData.totalAmount,
-        savedAt: new Date().toISOString()
-      });
-
-    } catch (error) {
-      await conn.rollback();
-      console.error('❌ Ошибка при сохранении заказа:', error);
-      throw error;
-    } finally {
-      await conn.end();
+      
+      // Здесь можно добавить обновление товаров заказа
+      // (в зависимости от вашей бизнес-логики)
+      
+    } else {
+      // СОЗДАНИЕ нового заказа
+      console.log('🆕 Creating new order');
+      
+      // Получаем следующий ID
+      const [maxIdRows] = await connection.execute('SELECT MAX(Ord_id) as maxId FROM ERP_Orders');
+      const nextId = (maxIdRows[0].maxId || 0) + 1;
+      
+      // Создаем заказ
+      await connection.execute(
+        `INSERT INTO ERP_Orders (Ord_id, Ord_date, Status, Supplier_id, Delivery_date, Ship_date, Unit_to_ord_id)
+         VALUES (?, NOW(), ?, ?, ?, ?, ?)`,
+        [nextId, mapStatusToDB(status), supplierId, desiredDate, actualDate, products[0].id]
+      );
+      
+      orderId = nextId;
     }
-
-  } catch (err) {
-    console.error("❌ Ошибка в /save-supplier-order-fixed:", err);
+    
+    res.json({
+      success: true,
+      orderId: orderId,
+      orderNumber: orderNumber || `ORD-${String(orderId).padStart(4, '0')}`,
+      message: receipt_id ? 'Order updated successfully' : 'Order created successfully'
+    });
+    
+  } catch (error) {
+    console.error('Error saving order:', error);
     res.status(500).json({ 
-      error: "Server error", 
-      detail: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      error: 'Internal server error',
+      details: error.message 
     });
   }
 });
+
+// Маппинг статусов для БД
+function mapStatusToDB(status) {
+  const statusMap = {
+    'new': 'В обработке',
+    'in-progress': 'В обработке',
+    'confirmed': 'Подтвержден',
+    'shipped': 'Отгружено',
+    'delivered': 'Доставлено',
+    'cancelled': 'Отменено',
+    'draft': 'Черновик'
+  };
+  return statusMap[status] || 'В обработке';
+}
 
 
 
@@ -1408,6 +1365,76 @@ app.get("/get-warehouse-products", async (req, res) => {
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
+
+
+// Эндпоинт для получения деталей заказа
+app.get('/get-order-details', async (req, res) => {
+  try {
+    const { receipt_id } = req.query;
+    
+    if (!receipt_id) {
+      return res.status(400).json({ error: 'receipt_id is required' });
+    }
+    
+    // Получаем основную информацию о заказе
+    const [orderRows] = await connection.execute(
+      `SELECT o.Ord_id, o.Ord_date, o.Status, o.Supplier_id, o.Delivery_date, o.Ship_date,
+              s.Short_name as supplier_name
+       FROM ERP_Orders o
+       LEFT JOIN ERP_Supplier s ON o.Supplier_id = s.Supplier_id
+       WHERE o.Ord_id = ?`,
+      [receipt_id]
+    );
+    
+    if (orderRows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    
+    const order = orderRows[0];
+    
+    // Получаем товары заказа
+    const [productRows] = await connection.execute(
+      `SELECT u.Unit_to_ord_id as product_id, u.Name as product_name, 
+              u.Price as price, u.Amount as quantity, 'шт' as unit
+       FROM ERP_Unit_To_Ord u
+       INNER JOIN ERP_Orders o ON o.Unit_to_ord_id = u.Unit_to_ord_id
+       WHERE o.Ord_id = ?`,
+      [receipt_id]
+    );
+    
+    const orderData = {
+      receipt_id: order.Ord_id,
+      order_date: order.Ord_date,
+      status: mapOrderStatus(order.Status),
+      supplier_id: order.Supplier_id,
+      supplier_name: order.supplier_name,
+      desired_date: order.Delivery_date,
+      actual_date: order.Ship_date,
+      order_number: `ORD-${String(order.Ord_id).padStart(4, '0')}`,
+      products: productRows
+    };
+    
+    res.json(orderData);
+    
+  } catch (error) {
+    console.error('Error fetching order details:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Маппинг статусов
+function mapOrderStatus(dbStatus) {
+  const statusMap = {
+    'В обработке': 'in-progress',
+    'Отгружено': 'shipped',
+    'Доставлено': 'delivered'
+  };
+  return statusMap[dbStatus] || 'new';
+}
+
+
+
+
 
 // ===============================
 // 🚀 Запуск сервера
