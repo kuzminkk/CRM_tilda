@@ -930,7 +930,7 @@ app.post("/cleanup-duplicates", async (req, res) => {
 
 
 // ===============================
-// 📦 GET /get-warehouse-receipts — получение поступлений на склад
+// 📦 GET /get-warehouse-receipts — получение поступлений на склад (ОБНОВЛЕННАЯ ВЕРСИЯ)
 // ===============================
 app.get("/get-warehouse-receipts", async (req, res) => {
   try {
@@ -940,23 +940,19 @@ app.get("/get-warehouse-receipts", async (req, res) => {
 
     const conn = await mysql.createConnection(dbConfig);
 
+    // Получаем заказы вместо поступлений
     const [rows] = await conn.execute(`
       SELECT 
-        s.Sup_id AS receipt_id,
-        s.Sup_date AS receipt_date,
-        sup.Short_name AS supplier_name,
-        sup.Full_name AS supplier_full_name,
-        COUNT(DISTINCT s.Unit_id) AS positions_count,
-        SUM(s.Unit_amount) AS total_quantity,
-        CASE 
-          WHEN s.Sup_date > CURDATE() THEN 'coming'
-          WHEN s.Sup_date = CURDATE() THEN 'new' 
-          ELSE 'available'
-        END AS status_type
-      FROM ERP_Supplies s
-      JOIN ERP_Supplier sup ON s.Supplier_id = sup.Supplier_id
-      GROUP BY s.Sup_id, s.Sup_date, sup.Short_name, sup.Full_name
-      ORDER BY s.Sup_date DESC
+        o.Ord_id AS id,
+        CONCAT('ORD-', LPAD(o.Ord_id, 4, '0')) AS number,
+        o.Ord_date AS date,
+        o.Status AS status,
+        s.Short_name AS supplier,
+        s.Supplier_id AS supplier_id,
+        1 AS positions
+      FROM ERP_Orders o
+      LEFT JOIN ERP_Supplier s ON o.Supplier_id = s.Supplier_id
+      ORDER BY o.Ord_date DESC
       LIMIT 10
     `);
 
@@ -964,17 +960,14 @@ app.get("/get-warehouse-receipts", async (req, res) => {
     
     // Преобразуем данные для фронтенда
     const formattedData = rows.map(row => ({
-      id: row.receipt_id,
-      number: `Поступление №${String(row.receipt_id).padStart(3, '0')}`,
-      date: new Date(row.receipt_date).toLocaleDateString('ru-RU', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric'
-      }),
-      supplier: row.supplier_name,
-      positions: row.positions_count,
-      status: row.status_type,
-      status_text: getStatusText(row.status_type)
+      id: row.id,
+      number: row.number,
+      date: new Date(row.date).toLocaleDateString('ru-RU'),
+      supplier: row.supplier,
+      supplier_id: row.supplier_id,
+      positions: row.positions,
+      status: mapOrderStatus(row.status), // Используем маппинг статусов
+      status_text: getStatusText(mapOrderStatus(row.status))
     }));
 
     res.json(formattedData);
@@ -983,7 +976,6 @@ app.get("/get-warehouse-receipts", async (req, res) => {
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
-
 // ===============================
 // 📋 GET /get-receipt-details — детали конкретного поступления
 // ===============================
