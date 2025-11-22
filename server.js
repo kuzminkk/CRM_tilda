@@ -1431,7 +1431,29 @@ app.get('/get-order-details', async (req, res) => {
 });
 
 
+// Маппинг статусов для заказов
+function mapOrderStatus(dbStatus) {
+  const statusMap = {
+    'В обработке': 'in-progress',
+    'Отгружено': 'shipped',
+    'Доставлено': 'delivered'
+  };
+  return statusMap[dbStatus] || 'new';
+}
 
+// Маппинг статусов для БД
+function mapStatusToDB(status) {
+  const statusMap = {
+    'new': 'В обработке',
+    'in-progress': 'В обработке',
+    'confirmed': 'Подтвержден',
+    'shipped': 'Отгружено',
+    'delivered': 'Доставлено',
+    'cancelled': 'Отменено',
+    'draft': 'Черновик'
+  };
+  return statusMap[status] || 'В обработке';
+}
 
 
 
