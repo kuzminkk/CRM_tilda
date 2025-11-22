@@ -2019,6 +2019,332 @@ app.get('/warehouse-status', async (req, res) => {
 
 
 // ===============================
+// 👥 GET /get-contractors — получение списка контрагентов (поставщиков)
+// ===============================
+app.get("/get-contractors", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        s.Supplier_id as id,
+        s.Short_name as name,
+        s.Full_name as full_name,
+        s.Inn as inn,
+        s.Type as type,
+        s.Ogrn as ogrn,
+        s.Reg_date as reg_date,
+        s.Ur_address as legal_address,
+        s.Fact_address as actual_address,
+        s.Phone_number as phone,
+        s.Email as email,
+        s.Website as website,
+        s.Bank_name as bank_name,
+        s.Bik as bik,
+        s.Corr_acc as corr_account,
+        s.Curr_acc as current_account,
+        CONCAT(cp.Fio, ' - ', cp.Post) as contact_person,
+        cp.Fio as contact_name,
+        cp.Post as contact_position,
+        cp.Phone_number as contact_phone,
+        cp.Email as contact_email
+      FROM ERP_Supplier s
+      LEFT JOIN ERP_Contact_Person cp ON s.Contact_person = cp.Cont_pers_id
+      ORDER BY s.Short_name
+    `);
+
+    await conn.end();
+
+    // Форматируем данные для фронтенда
+    const contractors = rows.map(row => ({
+      id: row.id,
+      name: row.name,
+      full_name: row.full_name,
+      inn: row.inn,
+      type: row.type,
+      ogrn: row.ogrn,
+      reg_date: row.reg_date ? new Date(row.reg_date).toLocaleDateString('ru-RU') : null,
+      legal_address: row.legal_address,
+      actual_address: row.actual_address,
+      phone: row.phone,
+      email: row.email,
+      website: row.website,
+      bank_name: row.bank_name,
+      bik: row.bik,
+      corr_account: row.corr_account,
+      current_account: row.current_account,
+      contact_person: row.contact_person,
+      contact_name: row.contact_name,
+      contact_position: row.contact_position,
+      contact_phone: row.contact_phone,
+      contact_email: row.contact_email
+    }));
+
+    res.json(contractors);
+  } catch (err) {
+    console.error("Ошибка в /get-contractors:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// ===============================
+// ➕ POST /add-contractor — добавление нового контрагента
+// ===============================
+app.post("/add-contractor", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const {
+      name, inn, contact_name, contact_position, contact_phone, contact_email,
+      full_name, type, ogrn, legal_address, actual_address, phone, email,
+      website, bank_name, bik, corr_account, current_account
+    } = req.body;
+
+    const conn = await mysql.createConnection(dbConfig);
+    await conn.beginTransaction();
+
+    try {
+      // 1. Сначала добавляем контактное лицо
+      const [maxContactId] = await conn.execute('SELECT MAX(Cont_pers_id) as maxId FROM ERP_Contact_Person');
+      const nextContactId = (maxContactId[0].maxId || 0) + 1;
+
+      await conn.execute(
+        `INSERT INTO ERP_Contact_Person (Cont_pers_id, Fio, Post, Phone_number, Email)
+         VALUES (?, ?, ?, ?, ?)`,
+        [nextContactId, contact_name, contact_position, contact_phone, contact_email]
+      );
+
+      // 2. Добавляем поставщика
+      const [maxSupplierId] = await conn.execute('SELECT MAX(Supplier_id) as maxId FROM ERP_Supplier');
+      const nextSupplierId = (maxSupplierId[0].maxId || 0) + 1;
+
+      await conn.execute(
+        `INSERT INTO ERP_Supplier (
+          Supplier_id, Type, Short_name, Full_name, Inn, Ogrn,
+          Reg_date, Ur_address, Fact_address, Phone_number, Email, Website,
+          Bank_name, Bik, Corr_acc, Curr_acc, Contact_person
+        ) VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          nextSupplierId, type || 'ООО', name, full_name || name, inn, ogrn,
+          legal_address, actual_address || legal_address, phone, email, website,
+          bank_name, bik, corr_account, current_account, nextContactId
+        ]
+      );
+
+      await conn.commit();
+      
+      res.status(200).json({
+        status: "success",
+        message: "Контрагент успешно добавлен",
+        contractor_id: nextSupplierId
+      });
+
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      await conn.end();
+    }
+
+  } catch (err) {
+    console.error("Ошибка в /add-contractor:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// ===============================
+// ✏️ PUT /update-contractor — обновление данных контрагента
+// ===============================
+app.put("/update-contractor", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const {
+      id, name, inn, contact_name, contact_position, contact_phone, contact_email,
+      full_name, type, ogrn, legal_address, actual_address, phone, email,
+      website, bank_name, bik, corr_account, current_account
+    } = req.body;
+
+    if (!id) {
+      return res.status(400).json({ error: "Не указан ID контрагента" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+    await conn.beginTransaction();
+
+    try {
+      // 1. Получаем ID контактного лица
+      const [supplierRows] = await conn.execute(
+        'SELECT Contact_person FROM ERP_Supplier WHERE Supplier_id = ?',
+        [id]
+      );
+
+      if (supplierRows.length === 0) {
+        throw new Error("Контрагент не найден");
+      }
+
+      const contactPersonId = supplierRows[0].Contact_person;
+
+      // 2. Обновляем контактное лицо
+      await conn.execute(
+        `UPDATE ERP_Contact_Person SET Fio = ?, Post = ?, Phone_number = ?, Email = ?
+         WHERE Cont_pers_id = ?`,
+        [contact_name, contact_position, contact_phone, contact_email, contactPersonId]
+      );
+
+      // 3. Обновляем поставщика
+      await conn.execute(
+        `UPDATE ERP_Supplier SET
+          Type = ?, Short_name = ?, Full_name = ?, Inn = ?, Ogrn = ?,
+          Ur_address = ?, Fact_address = ?, Phone_number = ?, Email = ?, Website = ?,
+          Bank_name = ?, Bik = ?, Corr_acc = ?, Curr_acc = ?
+         WHERE Supplier_id = ?`,
+        [
+          type || 'ООО', name, full_name || name, inn, ogrn,
+          legal_address, actual_address || legal_address, phone, email, website,
+          bank_name, bik, corr_account, current_account, id
+        ]
+      );
+
+      await conn.commit();
+      
+      res.status(200).json({
+        status: "success",
+        message: "Данные контрагента обновлены"
+      });
+
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      await conn.end();
+    }
+
+  } catch (err) {
+    console.error("Ошибка в /update-contractor:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// ===============================
+// 🔍 GET /search-contractors — поиск контрагентов
+// ===============================
+app.get("/search-contractors", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { query } = req.query;
+
+    if (!query) {
+      return res.json([]);
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        s.Supplier_id as id,
+        s.Short_name as name,
+        s.Full_name as full_name,
+        s.Inn as inn,
+        CONCAT(cp.Fio, ' - ', cp.Post) as contact_person,
+        cp.Phone_number as contact_phone,
+        cp.Email as contact_email
+      FROM ERP_Supplier s
+      LEFT JOIN ERP_Contact_Person cp ON s.Contact_person = cp.Cont_pers_id
+      WHERE s.Short_name LIKE ? OR s.Full_name LIKE ? OR s.Inn LIKE ?
+      ORDER BY s.Short_name
+      LIMIT 10
+    `, [`%${query}%`, `%${query}%`, `%${query}%`]);
+
+    await conn.end();
+    res.json(rows);
+  } catch (err) {
+    console.error("Ошибка в /search-contractors:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// ===============================
+// 📋 GET /get-contractor-details — получение детальной информации о контрагенте
+// ===============================
+app.get("/get-contractor-details", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { id } = req.query;
+
+    if (!id) {
+      return res.status(400).json({ error: "Не указан ID контрагента" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        s.Supplier_id as id,
+        s.Short_name as name,
+        s.Full_name as full_name,
+        s.Inn as inn,
+        s.Type as type,
+        s.Kpp as kpp,
+        s.Okpo as okpo,
+        s.Ogrn as ogrn,
+        s.Reg_date as reg_date,
+        s.Ur_address as legal_address,
+        s.Fact_address as actual_address,
+        s.Phone_number as phone,
+        s.Email as email,
+        s.Website as website,
+        s.Bank_name as bank_name,
+        s.Bik as bik,
+        s.Corr_acc as corr_account,
+        s.Curr_acc as current_account,
+        cp.Cont_pers_id as contact_id,
+        cp.Fio as contact_name,
+        cp.Post as contact_position,
+        cp.Phone_number as contact_phone,
+        cp.Email as contact_email
+      FROM ERP_Supplier s
+      LEFT JOIN ERP_Contact_Person cp ON s.Contact_person = cp.Cont_pers_id
+      WHERE s.Supplier_id = ?
+    `, [id]);
+
+    await conn.end();
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Контрагент не найден" });
+    }
+
+    const contractor = rows[0];
+    
+    // Форматируем дату
+    if (contractor.reg_date) {
+      contractor.reg_date = new Date(contractor.reg_date).toLocaleDateString('ru-RU');
+    }
+
+    res.json(contractor);
+  } catch (err) {
+    console.error("Ошибка в /get-contractor-details:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+
+
+// ===============================
 // 🚀 Запуск сервера
 // ===============================
 const PORT = process.env.PORT || 3000;
