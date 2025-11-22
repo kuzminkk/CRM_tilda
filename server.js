@@ -1125,7 +1125,7 @@ app.get("/get-receipt-for-order", async (req, res) => {
 
 
 // ===============================
-// 💾 POST /save-supplier-order-fixed — исправленное сохранение заказа
+// 💾 POST /save-supplier-order-fixed — исправленное сохранение заказа с поддержкой нескольких товаров
 // ===============================
 app.post('/save-supplier-order-fixed', async (req, res) => {
   let conn;
@@ -1134,6 +1134,7 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
     const { receipt_id, status, supplierId, desiredDate, actualDate, products, orderNumber, totalAmount } = req.body;
     
     console.log('Received order data:', req.body);
+    console.log('Products count:', products.length);
     
     if (!supplierId || !products || products.length === 0) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -1151,12 +1152,18 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
       // Обновляем основную информацию заказа
       await conn.execute(
         `UPDATE ERP_Orders 
-         SET Status = ?, Supplier_id = ?, Delivery_date = ?, Ship_date = ?, Unit_to_ord_id = ?
+         SET Status = ?, Supplier_id = ?, Delivery_date = ?, Ship_date = ?
          WHERE Ord_id = ?`,
-        [mapStatusToDB(status), supplierId, desiredDate, actualDate, products[0].id, receipt_id]
+        [mapStatusToDB(status), supplierId, desiredDate, actualDate, receipt_id]
       );
       
-      console.log('✅ Order updated successfully');
+      // Удаляем старые товары заказа
+      await conn.execute(
+        `DELETE FROM ERP_Order_Items WHERE Ord_id = ?`,
+        [receipt_id]
+      );
+      
+      console.log('✅ Order updated and old items removed');
       
     } else {
       // СОЗДАНИЕ нового заказа
@@ -1166,7 +1173,7 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
       const [maxIdRows] = await conn.execute('SELECT MAX(Ord_id) as maxId FROM ERP_Orders');
       const nextId = (maxIdRows[0].maxId || 0) + 1;
       
-      // Создаем заказ
+      // Создаем заказ (используем первый товар для обратной совместимости)
       await conn.execute(
         `INSERT INTO ERP_Orders (Ord_id, Ord_date, Status, Supplier_id, Delivery_date, Ship_date, Unit_to_ord_id)
          VALUES (?, NOW(), ?, ?, ?, ?, ?)`,
@@ -1177,12 +1184,27 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
       console.log('✅ New order created with ID:', nextId);
     }
     
+    // Добавляем все товары в заказ
+    console.log('📦 Adding products to order:', products.length);
+    for (const product of products) {
+      console.log(`➕ Adding product: ${product.name}, quantity: ${product.quantity}, price: ${product.price}`);
+      
+      await conn.execute(
+        `INSERT INTO ERP_Order_Items (Ord_id, Unit_to_ord_id, Quantity, Price)
+         VALUES (?, ?, ?, ?)`,
+        [orderId, product.id, product.quantity, product.price]
+      );
+    }
+    
     await conn.commit();
+    
+    console.log('✅ Order saved successfully with', products.length, 'products');
     
     res.json({
       success: true,
       orderId: orderId,
       orderNumber: orderNumber || `ORD-${String(orderId).padStart(4, '0')}`,
+      productsCount: products.length,
       message: receipt_id ? 'Order updated successfully' : 'Order created successfully'
     });
     
@@ -1357,7 +1379,7 @@ app.get("/get-warehouse-products", async (req, res) => {
 });
 
 
-// Эндпоинт для получения деталей заказа
+// Эндпоинт для получения деталей заказа с поддержкой нескольких товаров
 app.get('/get-order-details', async (req, res) => {
   let conn;
   
@@ -1390,15 +1412,29 @@ app.get('/get-order-details', async (req, res) => {
     
     const order = orderRows[0];
     
-    // Получаем товары заказа
+    // Получаем все товары заказа из новой таблицы
     const [productRows] = await conn.execute(
-      `SELECT u.Unit_to_ord_id as product_id, u.Name as product_name, 
-              u.Price as price, u.Amount as quantity, 'шт' as unit
-       FROM ERP_Unit_To_Ord u
-       INNER JOIN ERP_Orders o ON o.Unit_to_ord_id = u.Unit_to_ord_id
-       WHERE o.Ord_id = ?`,
+      `SELECT oi.Unit_to_ord_id as product_id, u.Name as product_name, 
+              oi.Price as price, oi.Quantity as quantity, 'шт' as unit
+       FROM ERP_Order_Items oi
+       INNER JOIN ERP_Unit_To_Ord u ON oi.Unit_to_ord_id = u.Unit_to_ord_id
+       WHERE oi.Ord_id = ?`,
       [receipt_id]
     );
+    
+    // Если нет товаров в новой таблице, получаем из старой (для обратной совместимости)
+    let products = productRows;
+    if (products.length === 0) {
+      const [legacyProductRows] = await conn.execute(
+        `SELECT u.Unit_to_ord_id as product_id, u.Name as product_name, 
+                u.Price as price, u.Amount as quantity, 'шт' as unit
+         FROM ERP_Unit_To_Ord u
+         INNER JOIN ERP_Orders o ON o.Unit_to_ord_id = u.Unit_to_ord_id
+         WHERE o.Ord_id = ?`,
+        [receipt_id]
+      );
+      products = legacyProductRows;
+    }
     
     const orderData = {
       receipt_id: order.Ord_id,
@@ -1409,8 +1445,10 @@ app.get('/get-order-details', async (req, res) => {
       desired_date: order.Delivery_date,
       actual_date: order.Ship_date,
       order_number: `ORD-${String(order.Ord_id).padStart(4, '0')}`,
-      products: productRows
+      products: products
     };
+    
+    console.log(`✅ Loaded order ${receipt_id} with ${products.length} products`);
     
     res.json(orderData);
     
