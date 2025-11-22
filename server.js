@@ -604,17 +604,21 @@ app.get("/get-doctors", async (req, res) => {
 });
 
 // ===============================
-// 💾 POST /save-visit — сохранение визита (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+// 💾 POST /save-visit — сохранение визита с поддержкой товаров (ОБНОВЛЕННАЯ ВЕРСИЯ)
 // ===============================
 app.post("/save-visit", async (req, res) => {
   if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const { patientId, date, startTime, endTime, doctorId, discount, services, finalAmount, visitId } = req.body;
+  const { patientId, date, startTime, endTime, doctorId, discount, services, products, finalAmount, visitId } = req.body;
   
   console.log('=== НАЧАЛО СОХРАНЕНИЯ ВИЗИТА ===');
-  console.log('Данные:', { visitId, servicesCount: services?.length });
+  console.log('Данные:', { 
+    visitId, 
+    servicesCount: services?.length,
+    productsCount: products?.length 
+  });
 
   const conn = await mysql.createConnection(dbConfig);
 
@@ -623,12 +627,23 @@ app.post("/save-visit", async (req, res) => {
 
     // ДИАГНОСТИКА: Проверим текущее состояние визита ДО изменений
     if (visitId) {
-      console.log('🔍 ДИАГНОСТИКА: Проверяем текущие услуги визита...');
+      console.log('🔍 ДИАГНОСТИКА: Проверяем текущие данные визита...');
       const [currentServices] = await conn.execute(
         `SELECT vds_id, dse_id_FK, vds_quantity FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
         [visitId]
       );
       console.log(`📊 Текущие услуги визита ${visitId}:`, currentServices);
+
+      // Проверяем текущие товары визита (если таблица существует)
+      try {
+        const [currentProducts] = await conn.execute(
+          `SELECT id, product_id, quantity FROM Visit_Products WHERE visit_id = ?`,
+          [visitId]
+        );
+        console.log(`📦 Текущие товары визита ${visitId}:`, currentProducts);
+      } catch (err) {
+        console.log('ℹ️ Таблица Visit_Products еще не создана, пропускаем проверку товаров');
+      }
     }
 
     let visitIdToUse;
@@ -636,7 +651,7 @@ app.post("/save-visit", async (req, res) => {
     if (visitId && !isNaN(parseInt(visitId))) {
       console.log('🔧 РЕДАКТИРОВАНИЕ визита ID:', visitId);
       
-      // Двойная проверка удаления
+      // УДАЛЕНИЕ старых услуг
       console.log('🗑️ УДАЛЕНИЕ старых услуг...');
       const [deleteBefore] = await conn.execute(
         `SELECT COUNT(*) as count_before FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
@@ -644,19 +659,40 @@ app.post("/save-visit", async (req, res) => {
       );
       console.log(`Услуг до удаления: ${deleteBefore[0].count_before}`);
 
-      // Удаляем ВСЕ услуги
       const [deleteResult] = await conn.execute(
         `DELETE FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
         [visitId]
       );
-      console.log(`🗑️ Удалено записей: ${deleteResult.affectedRows}`);
+      console.log(`🗑️ Удалено услуг: ${deleteResult.affectedRows}`);
 
-      // Проверяем, что удалилось
-      const [deleteAfter] = await conn.execute(
-        `SELECT COUNT(*) as count_after FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
-        [visitId]
-      );
-      console.log(`Услуг после удаления: ${deleteAfter[0].count_after}`);
+      // УДАЛЕНИЕ старых товаров (если таблица существует)
+      let deletedProductsCount = 0;
+      try {
+        // Сначала получаем старые товары для восстановления остатков
+        const [oldProducts] = await conn.execute(
+          `SELECT product_id, quantity FROM Visit_Products WHERE visit_id = ?`,
+          [visitId]
+        );
+        
+        // Восстанавливаем остатки на складе для старых товаров
+        for (const oldProduct of oldProducts) {
+          await conn.execute(
+            `UPDATE ERP_Unit_In_Storage SET Amount = Amount + ? WHERE Unit_id = ?`,
+            [oldProduct.quantity, oldProduct.product_id]
+          );
+          console.log(`↩️ Восстановлен товар ${oldProduct.product_id}: +${oldProduct.quantity} шт.`);
+        }
+
+        // Удаляем старые товары визита
+        const [deleteProductsResult] = await conn.execute(
+          `DELETE FROM Visit_Products WHERE visit_id = ?`,
+          [visitId]
+        );
+        deletedProductsCount = deleteProductsResult.affectedRows;
+        console.log(`🗑️ Удалено товаров: ${deletedProductsCount}`);
+      } catch (err) {
+        console.log('ℹ️ Таблица Visit_Products еще не создана, пропускаем удаление товаров');
+      }
 
       // Обновляем визит
       console.log('🔄 Обновление данных визита...');
@@ -684,27 +720,128 @@ app.post("/save-visit", async (req, res) => {
       console.log('✅ Создан визит ID:', visitIdToUse);
     }
 
-    // Добавляем услуги
-    console.log('📦 Добавление услуг:', services.length);
-    for (const service of services) {
-      console.log(`➕ Услуга: ${service.serviceId}, количество: ${service.quantity}`);
-      
-      const [serviceResult] = await conn.execute(
-        `INSERT INTO Visit_Dental_Services (
-          vst_id_FK, dse_id_FK, vds_quantity, vds_discount, vds_total_amount
-        ) VALUES (?, ?, ?, 0, ?)`,
-        [visitIdToUse, service.serviceId, service.quantity || 1, service.total || 0]
-      );
-      console.log(`✅ Добавлена услуга ID: ${serviceResult.insertId}`);
+    // ДОБАВЛЕНИЕ УСЛУГ
+    console.log('📦 Добавление услуг:', services?.length || 0);
+    if (services && services.length > 0) {
+      for (const service of services) {
+        console.log(`➕ Услуга: ${service.serviceId || service.id}, количество: ${service.quantity}`);
+        
+        const serviceId = service.serviceId || service.id;
+        const serviceQuantity = service.quantity || 1;
+        const serviceTotal = service.total || (service.price * serviceQuantity);
+        
+        const [serviceResult] = await conn.execute(
+          `INSERT INTO Visit_Dental_Services (
+            vst_id_FK, dse_id_FK, vds_quantity, vds_discount, vds_total_amount
+          ) VALUES (?, ?, ?, 0, ?)`,
+          [visitIdToUse, serviceId, serviceQuantity, serviceTotal]
+        );
+        console.log(`✅ Добавлена услуга ID: ${serviceResult.insertId}`);
+      }
+    } else {
+      console.log('ℹ️ Услуги не указаны');
+    }
+
+    // ДОБАВЛЕНИЕ ТОВАРОВ
+    console.log('📦 Добавление товаров:', products?.length || 0);
+    if (products && products.length > 0) {
+      try {
+        for (const product of products) {
+          console.log(`➕ Товар: ${product.id}, количество: ${product.quantity}`);
+          
+          // Проверяем доступное количество
+          const [productCheck] = await conn.execute(
+            `SELECT Amount, Name FROM ERP_Unit_In_Storage WHERE Unit_id = ?`,
+            [product.id]
+          );
+          
+          if (productCheck.length === 0) {
+            throw new Error(`Товар с ID ${product.id} не найден`);
+          }
+          
+          const availableQuantity = productCheck[0].Amount;
+          const productName = productCheck[0].Name;
+          
+          if (availableQuantity < product.quantity) {
+            throw new Error(`Недостаточно товара "${productName}". Доступно: ${availableQuantity}, требуется: ${product.quantity}`);
+          }
+          
+          // Добавляем товар в визит
+          const [productResult] = await conn.execute(
+            `INSERT INTO Visit_Products (visit_id, product_id, quantity) VALUES (?, ?, ?)`,
+            [visitIdToUse, product.id, product.quantity]
+          );
+          
+          // Обновляем количество на складе
+          await conn.execute(
+            `UPDATE ERP_Unit_In_Storage SET Amount = Amount - ? WHERE Unit_id = ?`,
+            [product.quantity, product.id]
+          );
+          
+          console.log(`✅ Добавлен товар ID: ${productResult.insertId}, списано со склада: ${product.quantity} шт.`);
+        }
+      } catch (err) {
+        // Если таблица Visit_Products не существует, создаем ее
+        if (err.code === 'ER_NO_SUCH_TABLE') {
+          console.log('📋 Создаем таблицу Visit_Products...');
+          
+          await conn.execute(`
+            CREATE TABLE Visit_Products (
+              id INT NOT NULL PRIMARY KEY AUTO_INCREMENT,
+              visit_id INT NOT NULL,
+              product_id INT NOT NULL,
+              quantity INT NOT NULL,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY (visit_id) REFERENCES Visits(vst_id),
+              FOREIGN KEY (product_id) REFERENCES ERP_Unit_In_Storage(Unit_id)
+            )
+          `);
+          console.log('✅ Таблица Visit_Products создана');
+          
+          // Повторяем добавление товаров после создания таблицы
+          for (const product of products) {
+            const [productResult] = await conn.execute(
+              `INSERT INTO Visit_Products (visit_id, product_id, quantity) VALUES (?, ?, ?)`,
+              [visitIdToUse, product.id, product.quantity]
+            );
+            
+            await conn.execute(
+              `UPDATE ERP_Unit_In_Storage SET Amount = Amount - ? WHERE Unit_id = ?`,
+              [product.quantity, product.id]
+            );
+            
+            console.log(`✅ Добавлен товар ID: ${productResult.insertId}`);
+          }
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      console.log('ℹ️ Товары не указаны');
     }
 
     // ФИНАЛЬНАЯ ПРОВЕРКА
     console.log('🔍 ФИНАЛЬНАЯ ПРОВЕРКА...');
+    
+    // Проверяем услуги
     const [finalServices] = await conn.execute(
       `SELECT vds_id, dse_id_FK, vds_quantity FROM Visit_Dental_Services WHERE vst_id_FK = ?`,
       [visitIdToUse]
     );
     console.log(`📊 Итоговые услуги визита ${visitIdToUse}:`, finalServices);
+
+    // Проверяем товары
+    let finalProducts = [];
+    try {
+      const [productsCheck] = await conn.execute(
+        `SELECT id, product_id, quantity FROM Visit_Products WHERE visit_id = ?`,
+        [visitIdToUse]
+      );
+      finalProducts = productsCheck;
+      console.log(`📦 Итоговые товары визита ${visitIdToUse}:`, finalProducts);
+    } catch (err) {
+      console.log('ℹ️ Таблица Visit_Products не доступна для проверки');
+    }
 
     await conn.commit();
     console.log('💾 ТРАНЗАКЦИЯ УСПЕШНА');
@@ -713,7 +850,8 @@ app.post("/save-visit", async (req, res) => {
       status: "success", 
       message: "Визит успешно сохранен",
       visitId: visitIdToUse,
-      finalServicesCount: finalServices.length
+      finalServicesCount: finalServices.length,
+      finalProductsCount: finalProducts.length
     });
     
   } catch (err) {
@@ -1596,6 +1734,60 @@ app.put("/update-warehouse-quantity", async (req, res) => {
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
+
+
+// ===============================
+// 📦 GET /get-visit-products — получение товаров использованных в визите
+// ===============================
+app.get("/get-visit-products", async (req, res) => {
+  try {
+    const { visit_id, api_key } = req.query;
+
+    if (process.env.API_KEY && api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    if (!visit_id) {
+      return res.status(400).json({ error: "Не указан ID визита" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    try {
+      const [rows] = await conn.execute(`
+        SELECT 
+          vp.id,
+          vp.product_id,
+          u.Name as name,
+          u.Specs as specifications,
+          vp.quantity,
+          u.Amount as available
+        FROM Visit_Products vp
+        JOIN ERP_Unit_In_Storage u ON vp.product_id = u.Unit_id
+        WHERE vp.visit_id = ?
+      `, [visit_id]);
+
+      await conn.end();
+      res.json(rows);
+    } catch (err) {
+      // Если таблица не существует, возвращаем пустой массив
+      if (err.code === 'ER_NO_SUCH_TABLE') {
+        await conn.end();
+        res.json([]);
+      } else {
+        throw err;
+      }
+    }
+  } catch (err) {
+    console.error("Ошибка в /get-visit-products:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+
+
+
+
 
 // ===============================
 // 🚀 Запуск сервера
