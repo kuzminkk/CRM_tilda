@@ -1557,6 +1557,45 @@ app.get("/get-warehouse-items", async (req, res) => {
   }
 });
 
+// ===============================
+// 📦 PUT /update-warehouse-quantity — обновление количества товара
+// ===============================
+app.put("/update-warehouse-quantity", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { item_id, new_quantity } = req.body;
+    
+    if (!item_id || new_quantity === undefined) {
+      return res.status(400).json({ error: "Не указаны item_id или new_quantity" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [result] = await conn.execute(
+      `UPDATE ERP_Unit_In_Storage SET Amount = ? WHERE Unit_id = ?`,
+      [new_quantity, item_id]
+    );
+
+    await conn.end();
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Товар не найден" });
+    }
+
+    res.json({ 
+      status: "success", 
+      message: "Количество обновлено",
+      item_id: item_id,
+      new_quantity: new_quantity
+    });
+  } catch (err) {
+    console.error("Ошибка в /update-warehouse-quantity:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
 
 // ===============================
 // 🚀 Запуск сервера
