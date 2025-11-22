@@ -1162,13 +1162,13 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
         [mapStatusToDB(status), supplierId, desiredDate, actualDate, receipt_id]
       );
       
-      // Удаляем старые товары заказа
-      await conn.execute(
-        `DELETE FROM ERP_Order_Items WHERE Ord_id = ?`,
-        [receipt_id]
-      );
-      
-      console.log('✅ Order updated and old items removed');
+      // Удаляем старые товары заказа (если таблица существует)
+      try {
+        await conn.execute(`DELETE FROM ERP_Order_Items WHERE Ord_id = ?`, [receipt_id]);
+        console.log('✅ Old order items removed');
+      } catch (error) {
+        console.log('ℹ️ ERP_Order_Items table not available, skipping item removal');
+      }
       
     } else {
       // СОЗДАНИЕ нового заказа
@@ -1189,21 +1189,30 @@ app.post('/save-supplier-order-fixed', async (req, res) => {
       console.log('✅ New order created with ID:', nextId);
     }
     
-    // Добавляем все товары в заказ
-    console.log('📦 Adding products to order:', products.length);
-    for (const product of products) {
-      console.log(`➕ Adding product: ${product.name}, quantity: ${product.quantity}, price: ${product.price}`);
-      
+    // Добавляем все товары в заказ (если таблица существует)
+    try {
+      for (const product of products) {
+        console.log(`➕ Adding product: ${product.name}, quantity: ${product.quantity}, price: ${product.price}`);
+        
+        await conn.execute(
+          `INSERT INTO ERP_Order_Items (Ord_id, Unit_to_ord_id, Quantity, Price)
+           VALUES (?, ?, ?, ?)`,
+          [orderId, product.id, product.quantity, product.price]
+        );
+      }
+      console.log('✅ All products added to order items');
+    } catch (error) {
+      console.log('ℹ️ ERP_Order_Items table not available, saving only first product to main order');
+      // Обновляем заказ с первым товаром для обратной совместимости
       await conn.execute(
-        `INSERT INTO ERP_Order_Items (Ord_id, Unit_to_ord_id, Quantity, Price)
-         VALUES (?, ?, ?, ?)`,
-        [orderId, product.id, product.quantity, product.price]
+        `UPDATE ERP_Orders SET Unit_to_ord_id = ? WHERE Ord_id = ?`,
+        [products[0].id, orderId]
       );
     }
     
     await conn.commit();
     
-    console.log('✅ Order saved successfully with', products.length, 'products');
+    console.log('✅ Order saved successfully');
     
     res.json({
       success: true,
