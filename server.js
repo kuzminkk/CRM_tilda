@@ -940,7 +940,7 @@ app.get("/get-warehouse-receipts", async (req, res) => {
 
     const conn = await mysql.createConnection(dbConfig);
 
-    // Получаем заказы вместо поступлений
+    // Получаем заказы с количеством товаров
     const [rows] = await conn.execute(`
       SELECT 
         o.Ord_id AS id,
@@ -949,9 +949,11 @@ app.get("/get-warehouse-receipts", async (req, res) => {
         o.Status AS status,
         s.Short_name AS supplier,
         s.Supplier_id AS supplier_id,
-        1 AS positions
+        COUNT(oi.Order_item_id) AS positions_count
       FROM ERP_Orders o
       LEFT JOIN ERP_Supplier s ON o.Supplier_id = s.Supplier_id
+      LEFT JOIN ERP_Order_Items oi ON o.Ord_id = oi.Ord_id
+      GROUP BY o.Ord_id, o.Ord_date, o.Status, s.Short_name, s.Supplier_id
       ORDER BY o.Ord_date DESC
       LIMIT 10
     `);
@@ -965,17 +967,20 @@ app.get("/get-warehouse-receipts", async (req, res) => {
       date: new Date(row.date).toLocaleDateString('ru-RU'),
       supplier: row.supplier,
       supplier_id: row.supplier_id,
-      positions: row.positions,
-      status: mapOrderStatus(row.status), // Используем маппинг статусов
+      positions: row.positions_count || 1, // Минимум 1 позиция
+      status: mapOrderStatus(row.status),
       status_text: getStatusText(mapOrderStatus(row.status))
     }));
 
+    console.log('📊 Заказы для отображения:', formattedData);
     res.json(formattedData);
   } catch (err) {
     console.error("Ошибка в /get-warehouse-receipts:", err);
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
+
+
 // ===============================
 // 📋 GET /get-receipt-details — детали конкретного поступления
 // ===============================
