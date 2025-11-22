@@ -1498,7 +1498,64 @@ function mapStatusToDB(status) {
   return statusMap[status] || 'В обработке';
 }
 
+// ===============================
+// 📦 GET /get-warehouse-items — получение товаров на складе
+// ===============================
+app.get("/get-warehouse-items", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
 
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        Unit_id as id,
+        Name as name,
+        Specs as specifications,
+        Amount as quantity,
+        Status as status
+      FROM ERP_Unit_In_Storage
+      ORDER BY Name
+    `);
+
+    await conn.end();
+    
+    // Преобразуем статусы для фронтенда
+    const formattedItems = rows.map(item => {
+      let statusType = 'available';
+      let statusText = 'В наличии';
+      
+      switch(item.status) {
+        case 'Требуется заказ':
+          statusType = 'coming';
+          statusText = 'Скоро поступление';
+          break;
+        case 'Новый':
+          statusType = 'new';
+          statusText = 'Новый';
+          break;
+        case 'На складе':
+        default:
+          statusType = 'available';
+          statusText = 'В наличии';
+      }
+      
+      return {
+        ...item,
+        status_type: statusType,
+        status_text: statusText
+      };
+    });
+
+    console.log('📊 Товары на складе:', formattedItems.length, 'шт.');
+    res.json(formattedItems);
+  } catch (err) {
+    console.error("Ошибка в /get-warehouse-items:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
 
 
 // ===============================
