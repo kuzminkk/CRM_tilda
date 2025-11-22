@@ -2342,7 +2342,72 @@ app.get("/get-contractor-details", async (req, res) => {
   }
 });
 
+// ===============================
+// 👤 GET /get-contractor — получение данных конкретного контрагента
+// ===============================
+app.get("/get-contractor", async (req, res) => {
+  try {
+    if (process.env.API_KEY && req.query.api_key !== process.env.API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
 
+    const { id } = req.query;
+
+    if (!id) {
+      return res.status(400).json({ error: "Не указан ID контрагента" });
+    }
+
+    const conn = await mysql.createConnection(dbConfig);
+
+    const [rows] = await conn.execute(`
+      SELECT 
+        s.Supplier_id as id,
+        s.Short_name as name,
+        s.Full_name as full_name,
+        s.Inn as inn,
+        s.Type as type,
+        s.Kpp as kpp,
+        s.Okpo as okpo,
+        s.Ogrn as ogrn,
+        s.Reg_date as reg_date,
+        s.Ur_address as legal_address,
+        s.Fact_address as actual_address,
+        s.Phone_number as phone,
+        s.Email as email,
+        s.Website as website,
+        s.Bank_name as bank_name,
+        s.Bik as bik,
+        s.Corr_acc as corr_account,
+        s.Curr_acc as current_account,
+        cp.Cont_pers_id as contact_id,
+        cp.Fio as contact_name,
+        cp.Post as contact_position,
+        cp.Phone_number as contact_phone,
+        cp.Email as contact_email
+      FROM ERP_Supplier s
+      LEFT JOIN ERP_Contact_Person cp ON s.Contact_person = cp.Cont_pers_id
+      WHERE s.Supplier_id = ?
+    `, [id]);
+
+    await conn.end();
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Контрагент не найден" });
+    }
+
+    const contractor = rows[0];
+    
+    // Форматируем дату
+    if (contractor.reg_date) {
+      contractor.reg_date = new Date(contractor.reg_date).toLocaleDateString('ru-RU');
+    }
+
+    res.json(contractor);
+  } catch (err) {
+    console.error("Ошибка в /get-contractor:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
 
 // ===============================
 // 🚀 Запуск сервера
